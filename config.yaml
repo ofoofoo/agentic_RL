@@ -1,5 +1,5 @@
-GEMINI_API_KEY: ""
-GEMINI_MODEL: "gemini-2.0-flash"
-DEVICE_SERIAL: "emulator-5554"  # Run `adb devices` to find yours
+GEMINI_MODEL: "gemini-3-flash-preview"
+DEVICE_SERIAL: "emulator-5554"  # adb devices
 OUTPUT_DIR: "./output"
 MAX_STEPS: 20
+TASK: "Go to Messages and text 240-751-3192 a short greeting."

@@ -1,17 +1,16 @@
+import time
 from pathlib import Path
 import google.genai as genai
 import google.genai.types as types
+from google.genai.errors import ClientError
 
 
 class GeminiModel:
     def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
-        print("model has been instantiated")
-        print(self.client)
-        print(self.model_name)
 
-    def generate(self, prompt: str, image_path: str | None = None) -> str:
+    def generate(self, prompt: str, image_path=None) -> str:
         """
         Send a prompt to Gemini and return the raw text response.
         """
@@ -27,5 +26,5 @@ class GeminiModel:
             model=self.model_name,
             contents=parts,
         )
-        print(response)
+        print(response.text)
         return response.text

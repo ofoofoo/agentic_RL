@@ -44,6 +44,21 @@ class AndroidController:
             f.write(png_bytes)
         return save_path
 
+    def screen_size(self) -> tuple[int, int]:
+        """
+        Return the physical screen resolution as (width, height) in pixels.
+        Parses the output of `adb shell wm size`, e.g. "Physical size: 1280x2856".
+        """
+        output: str = self.device.shell("wm size")
+        # output looks like: "Physical size: 1280x2856\n"
+        for line in output.splitlines():
+            if "Physical size" in line or "Override size" in line:
+                _, _, dimensions = line.partition(":")
+                w, _, h = dimensions.strip().partition("x")
+                return int(w), int(h)
+        raise RuntimeError(f"Could not parse screen size from: {output!r}")
+
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------

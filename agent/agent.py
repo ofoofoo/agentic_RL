@@ -1,13 +1,5 @@
 """
-Core agent loop.
-
-Each step:
-  1. Take a screenshot via AndroidController (ppadb)
-  2. Build a prompt with task description + action history
-  3. Call GeminiModel.generate() with the screenshot
-  4. Parse the JSON response
-  5. Dispatch the action to AndroidController
-  6. Append the step to a JSONL trajectory log
+Core agent loop: screenshot, build prompt (with histroy), call gemini, parse response, execute action, add to trajectory log
 """
 
 import json
@@ -17,7 +9,7 @@ from datetime import datetime
 
 from .android_controller import AndroidController
 from .model import GeminiModel
-from .prompt import SYSTEM_PROMPT
+from .prompt import build_system_prompt
 
 
 class Agent:
@@ -29,12 +21,10 @@ class Agent:
         self.controller = AndroidController(serial=config["DEVICE_SERIAL"])
         self.output_dir = config["OUTPUT_DIR"]
         self.max_steps = config.get("MAX_STEPS", 20)
+        w, h = self.controller.screen_size()
+        self.system_prompt = build_system_prompt(w, h)
 
         os.makedirs(self.output_dir, exist_ok=True)
-
-    # ------------------------------------------------------------------
-    # Prompt building
-    # ------------------------------------------------------------------
 
     def build_prompt(self, task: str, step: int, history: list[dict]) -> str:
         history_text = ""
@@ -46,18 +36,15 @@ class Agent:
             history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
 
         return (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{self.system_prompt}\n\n"
             f"Task: {task}\n\n"
             f"{history_text}"
             f"Current step: {step + 1} / {self.max_steps}\n"
             f"What is the next action?"
         )
 
-    # ------------------------------------------------------------------
-    # Action dispatch
-    # ------------------------------------------------------------------
-
-    def _dispatch(self, action: dict) -> None:
+    def execute_action(self, action: dict) -> None:
+        print("in dispatch traking an action")
         name = action["action"]
         args = action.get("args", {})
 
@@ -75,13 +62,9 @@ class Agent:
         elif name == "home":
             self.controller.home()
         elif name == "done":
-            pass  # Handled in run()
+            pass
         else:
             raise ValueError(f"Unknown action: {name!r}")
-
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
 
     def run(self, task: str) -> None:
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -96,28 +79,36 @@ class Agent:
         history: list[dict] = []
 
         for step in range(self.max_steps):
-            # 1. Screenshot
+            # screenshot
             screenshot_path = os.path.join(screenshot_dir, f"step_{step:03d}.png")
             self.controller.screenshot(screenshot_path)
             print(f"[step {step + 1}] Screenshot saved: {screenshot_path}")
 
-            # 2. Build prompt
+            # build prompt
             prompt = self.build_prompt(task, step, history)
 
-            # 3. Call Gemini
+            # call gemini
             raw_response = self.model.generate(prompt, image_path=screenshot_path)
             print(f"[step {step + 1}] Model response: {raw_response}")
 
-            # 4. Parse JSON action — strip markdown fences if the model slips one in
-            clean = raw_response.strip().removeprefix("```json").removesuffix("```").strip()
-            try:
-                action = json.loads(clean)
-            except json.JSONDecodeError as e:
-                print(f"[step {step + 1}] ERROR: could not parse response as JSON: {e}")
-                print("         Raw response was:", repr(raw_response))
+            # parse json action
+            action = None
+            for line in reversed(raw_response.strip().splitlines()):
+                line = line.strip().removeprefix("```json").removesuffix("```").strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    action = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+            if action is None:
+                print(f"[step {step + 1}] ERROR: no valid JSON found in response")
+                print("Raw response was:", repr(raw_response))
                 break
 
-            # 5. Log step
+            # log step
             record = {
                 "step": step,
                 "screenshot": screenshot_path,
@@ -127,19 +118,17 @@ class Agent:
             with open(trajectory_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
 
-            # 6. Check for done
+            # check for done
             if action.get("action") == "done":
                 print(f"\n[agent] Task complete after {step + 1} step(s).")
                 break
 
-            # 7. Execute
+            # execute
             try:
-                self._dispatch(action)
+                self.execute_action(action)
             except Exception as e:
                 print(f"[step {step + 1}] ERROR executing action: {e}")
                 break
-
-            # Small pause so the UI can settle before the next screenshot
             time.sleep(1.0)
 
         else:
