@@ -1,0 +1,3 @@
+google-genai
+pure-python-adb
+pyyaml

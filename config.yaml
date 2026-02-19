@@ -1,0 +1,5 @@
+GEMINI_API_KEY: ""
+GEMINI_MODEL: "gemini-2.0-flash"
+DEVICE_SERIAL: "emulator-5554"  # Run `adb devices` to find yours
+OUTPUT_DIR: "./output"
+MAX_STEPS: 20
