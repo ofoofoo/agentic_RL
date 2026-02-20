@@ -57,11 +57,45 @@ class AndroidController:
                 w, _, h = dimensions.strip().partition("x")
                 return int(w), int(h)
         raise RuntimeError(f"Could not parse screen size from: {output!r}")
+    
+    def screenshot_with_grid(
+        self,
+        save_path: str,
+        grid_path: str,
+        step: int = 200,
+    ) -> str:
+        """
+        Take a screenshot, then save a copy annotated with a coordinate grid
+        to *grid_path*. The grid lines and labels are spaced every *step* pixels,
+        giving the vision model clear spatial anchors.
+
+        Returns grid_path.
+        """
+        self.screenshot(save_path)
+        img = Image.open(save_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        w, h = img.size
+
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=40)
+
+        line_color = (255, 80, 80)    # red-ish grid lines
+        label_color = (255, 80, 80)   # yellow labels (visible on most backgrounds)
+
+        # Vertical lines + x labels
+        for x in range(0, w, step):
+            draw.line([(x, 0), (x, h)], fill=line_color, width=1)
+            draw.text((x + 3, 4), str(x), fill=label_color, font=font)
+
+        # Horizontal lines + y labels
+        for y in range(0, h, step):
+            draw.line([(0, y), (w, y)], fill=line_color, width=1)
+            draw.text((4, y + 3), str(y), fill=label_color, font=font)
+
+        os.makedirs(os.path.dirname(grid_path) or ".", exist_ok=True)
+        img.save(grid_path)
+        return grid_path
 
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
 
     def tap(self, x: int, y: int) -> None:
         self.device.input_tap(x, y)

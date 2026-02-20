@@ -81,14 +81,15 @@ class Agent:
         for step in range(self.max_steps):
             # screenshot
             screenshot_path = os.path.join(screenshot_dir, f"step_{step:03d}.png")
-            self.controller.screenshot(screenshot_path)
+            grid_path = os.path.join(screenshot_dir, f"step_{step:03d}_grid.png")
+            self.controller.screenshot_with_grid(screenshot_path, grid_path)
             print(f"[step {step + 1}] Screenshot saved: {screenshot_path}")
 
             # build prompt
             prompt = self.build_prompt(task, step, history)
 
             # call gemini
-            raw_response = self.model.generate(prompt, image_path=screenshot_path)
+            raw_response = self.model.generate(prompt, image_path=grid_path)
             print(f"[step {step + 1}] Model response: {raw_response}")
 
             # parse json action
