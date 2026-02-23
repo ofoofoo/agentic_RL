@@ -5,13 +5,16 @@ import yaml
 from dotenv import load_dotenv
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", type=str, default="Open Gmail")
+    args = parser.parse_args()
     load_dotenv()
     path = "config.yaml"
     with open(path) as f:
         config = yaml.safe_load(f)
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY")
     agent = Agent(config)
-    task = config["TASK"]
+    task = args.task
     agent.run(task)
 
 if __name__ == "__main__":

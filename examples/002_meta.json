@@ -1,0 +1,11 @@
+{
+  "task": "Search up the weather on Google Chrome",
+  "reasoning": "I can see Google Chrome is open and has already navigated to a weather search results page showing current weather (36°F, cloudy) and a hourly forecast. To search for the stocks, I will tap on the search bar and type 'stocks'.",
+  "action": {
+    "action": "tap",
+    "args": {
+      "x": 500,
+      "y": 200
+    }
+  }
+}

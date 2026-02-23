@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .android_controller import AndroidController
 from .model import GeminiModel
-from .prompt import build_system_prompt
+from .prompt import build_system_prompt, load_examples
 
 
 class Agent:
@@ -23,6 +23,14 @@ class Agent:
         self.max_steps = config.get("MAX_STEPS", 20)
         w, h = self.controller.screen_size()
         self.system_prompt = build_system_prompt(w, h)
+
+        # load ICL examples
+        examples_dir = config.get("EXAMPLES_DIR", "./examples")
+        self.examples = load_examples(examples_dir)
+        if self.examples:
+            print(f"[agent] Loaded {len(self.examples)} ICL example(s) from {examples_dir}")
+        else:
+            print(f"[agent] No ICL examples found in {examples_dir}: running zero-shot")
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -89,9 +97,12 @@ class Agent:
             prompt = self.build_prompt(task, step, history)
 
             # call gemini
-            raw_response = self.model.generate(prompt, image_path=grid_path)
+            raw_response = self.model.generate(
+                prompt,
+                image_path=grid_path,
+                examples=self.examples,
+            )
             print(f"[step {step + 1}] Model response: {raw_response}")
-
             # parse json action
             action = None
             for line in reversed(raw_response.strip().splitlines()):
@@ -130,7 +141,7 @@ class Agent:
             except Exception as e:
                 print(f"[step {step + 1}] ERROR executing action: {e}")
                 break
-            time.sleep(1.0)
+            time.sleep(3.0) # give UI sufficient time to update
 
         else:
             print(f"\n[agent] Reached max steps ({self.max_steps}) without finishing.")

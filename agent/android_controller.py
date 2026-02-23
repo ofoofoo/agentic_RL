@@ -7,6 +7,8 @@ protocol in a typed Python client.
 
 import os
 from ppadb.client import Client as AdbClient
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 
 class AndroidController:
@@ -31,18 +33,18 @@ class AndroidController:
     # Observation
     # ------------------------------------------------------------------
 
-    def screenshot(self, save_path: str) -> str:
-        """
-        Capture a screenshot and write it to *save_path* locally.
-        ppadb returns the PNG bytes directly — no on-device tmp path needed.
+    # def screenshot(self, save_path: str) -> str:
+    #     """
+    #     Capture a screenshot and write it to *save_path* locally.
+    #     ppadb returns the PNG bytes directly — no on-device tmp path needed.
 
-        Returns the save path on success.
-        """
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        png_bytes: bytes = self.device.screencap()
-        with open(save_path, "wb") as f:
-            f.write(png_bytes)
-        return save_path
+    #     Returns the save path on success.
+    #     """
+    #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    #     png_bytes: bytes = self.device.screencap()
+    #     with open(save_path, "wb") as f:
+    #         f.write(png_bytes)
+    #     return save_path
 
     def screen_size(self) -> tuple[int, int]:
         """
@@ -71,8 +73,8 @@ class AndroidController:
 
         Returns grid_path.
         """
-        self.screenshot(save_path)
-        img = Image.open(save_path).convert("RGB")
+        png_bytes: bytes = self.device.screencap()
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
         draw = ImageDraw.Draw(img)
         w, h = img.size
 
