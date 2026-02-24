@@ -21,8 +21,8 @@ class Agent:
         self.controller = AndroidController(serial=config["DEVICE_SERIAL"])
         self.output_dir = config["OUTPUT_DIR"]
         self.max_steps = config.get("MAX_STEPS", 20)
-        w, h = self.controller.screen_size()
-        self.system_prompt = build_system_prompt(w, h)
+        self.screen_w, self.screen_h = self.controller.screen_size()
+        self.system_prompt = build_system_prompt(self.screen_w, self.screen_h)
 
         # load ICL examples
         examples_dir = config.get("EXAMPLES_DIR", "./examples")
@@ -51,13 +51,37 @@ class Agent:
             f"What is the next action?"
         )
 
-    def execute_action(self, action: dict) -> None:
-        print("in dispatch traking an action")
+    def area_to_xy(self, area: int, subarea: str, rows: int, cols: int) -> tuple[int, int]:
+        """Convert a numbered grid cell + subarea string to pixel (x, y)."""
+        area -= 1
+        row, col = area // cols, area % cols
+        cell_w = self.screen_w // cols
+        cell_h = self.screen_h // rows
+        x0, y0 = col * cell_w, row * cell_h
+        offsets = {
+            "top-left":     (cell_w // 4,     cell_h // 4),
+            "top":          (cell_w // 2,     cell_h // 4),
+            "top-right":    (cell_w * 3 // 4, cell_h // 4),
+            "left":         (cell_w // 4,     cell_h // 2),
+            "center":       (cell_w // 2,     cell_h // 2),
+            "right":        (cell_w * 3 // 4, cell_h // 2),
+            "bottom-left":  (cell_w // 4,     cell_h * 3 // 4),
+            "bottom":       (cell_w // 2,     cell_h * 3 // 4),
+            "bottom-right": (cell_w * 3 // 4, cell_h * 3 // 4),
+        }
+        dx, dy = offsets.get(subarea, (cell_w // 2, cell_h // 2))
+        return x0 + dx, y0 + dy
+
+    def execute_action(self, action: dict, rows: int = 1, cols: int = 1) -> None:
         name = action["action"]
         args = action.get("args", {})
 
         if name == "tap":
-            self.controller.tap(args["x"], args["y"])
+            if "area" in args:
+                x, y = self.area_to_xy(args["area"], args.get("subarea", "center"), rows, cols)
+            else:
+                x, y = args["x"], args["y"]
+            self.controller.tap(x, y)
         elif name == "swipe":
             self.controller.swipe(
                 args["x1"], args["y1"], args["x2"], args["y2"],
@@ -86,12 +110,14 @@ class Agent:
 
         history: list[dict] = []
 
+        rows, cols = 1, 1  # updated each step after screenshot
+
         for step in range(self.max_steps):
             # screenshot
             screenshot_path = os.path.join(screenshot_dir, f"step_{step:03d}.png")
             grid_path = os.path.join(screenshot_dir, f"step_{step:03d}_grid.png")
-            self.controller.screenshot_with_grid(screenshot_path, grid_path)
-            print(f"[step {step + 1}] Screenshot saved: {screenshot_path}")
+            grid_path, rows, cols = self.controller.screenshot_with_numbered_grid(screenshot_path, grid_path)
+            print(f"[step {step + 1}] Grid: {rows}r x {cols}c — saved to {grid_path}")
 
             # build prompt
             prompt = self.build_prompt(task, step, history)
@@ -137,7 +163,7 @@ class Agent:
 
             # execute
             try:
-                self.execute_action(action)
+                self.execute_action(action, rows=rows, cols=cols)
             except Exception as e:
                 print(f"[step {step + 1}] ERROR executing action: {e}")
                 break

@@ -60,42 +60,41 @@ class AndroidController:
                 return int(w), int(h)
         raise RuntimeError(f"Could not parse screen size from: {output!r}")
     
-    def screenshot_with_grid(
+    def screenshot_with_numbered_grid(
         self,
         save_path: str,
         grid_path: str,
-        step: int = 200,
-    ) -> str:
+    ) -> tuple[str, int, int]:
         """
-        Take a screenshot, then save a copy annotated with a coordinate grid
-        to *grid_path*. The grid lines and labels are spaced every *step* pixels,
-        giving the vision model clear spatial anchors.
+        Capture a screenshot and annotate it with a numbered cell grid.
 
-        Returns grid_path.
+        Screen is fixed at 1280x2856. Cells are 160x168px → 8 cols x 17 rows = 136 cells,
+        labeled 1…136 left-to-right, top-to-bottom.
+
+        Returns (grid_path, rows, cols).
         """
+        CELL_W, CELL_H = 160, 168
+        cols = 1280 // CELL_W   # 8
+        rows = 2856 // CELL_H   # 17
+
         png_bytes: bytes = self.device.screencap()
         img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+
         draw = ImageDraw.Draw(img)
-        w, h = img.size
+        color = (255, 116, 113)
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=25)
 
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=40)
-
-        line_color = (255, 80, 80)    # red-ish grid lines
-        label_color = (255, 80, 80)   # yellow labels (visible on most backgrounds)
-
-        # Vertical lines + x labels
-        for x in range(0, w, step):
-            draw.line([(x, 0), (x, h)], fill=line_color, width=1)
-            draw.text((x + 3, 4), str(x), fill=label_color, font=font)
-
-        # Horizontal lines + y labels
-        for y in range(0, h, step):
-            draw.line([(0, y), (w, y)], fill=line_color, width=1)
-            draw.text((4, y + 3), str(y), fill=label_color, font=font)
+        for r in range(rows):
+            for c in range(cols):
+                label = r * cols + c + 1
+                x0, y0 = c * CELL_W, r * CELL_H
+                x1, y1 = x0 + CELL_W, y0 + CELL_H
+                draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
+                draw.text((x0 + 4, y0 + 4), str(label), fill=color, font=font)
 
         os.makedirs(os.path.dirname(grid_path) or ".", exist_ok=True)
         img.save(grid_path)
-        return grid_path
+        return grid_path, rows, cols
 
 
 

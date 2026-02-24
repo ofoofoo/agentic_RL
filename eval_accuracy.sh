@@ -3,10 +3,10 @@
 # Define your 5 tasks
 TASKS=(
     "Open Google Chrome and search up the weather"
-    "Open the Calendar and add a meeting at 3pm"
-    "Find the nearest coffee shop on Maps"
-    "Send a text to 555-0199 saying Hello"
-    "Adjust the screen brightness to maximum"
+    "Open the settings on the phone and navigate to the storage section to find the apps installed on my phone"
+    "Open the clock app and set an alarm for 7:30 AM"
+    "Send a text to 2407513192 with a unique Haiku"
+    "Go and Youtube and watch a vide on cute cats"
 )
 
 SUCCESS_COUNT=0
@@ -28,7 +28,7 @@ do
     # Check if the RESULT variable is NOT empty
     if [[ -n "$RESULT" ]]; then
         # Extract the step count from the captured string
-        STEPS=$(echo "$RESULT" | grep -oP "Task complete after \K\d+")
+        STEPS=$(echo "$RESULT" | sed -n 's/.*after \([0-9]*\) step.*/\1/p')
         echo -e "\n✅ Success: Completed in $STEPS steps."
         
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
@@ -38,7 +38,7 @@ do
     fi
 
     echo "Preparing for next task..."
-    python3 reset_device.py
+    python3 reset.py
     echo "------------------------------------------"
 done
 
