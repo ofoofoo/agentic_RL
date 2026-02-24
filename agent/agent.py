@@ -8,16 +8,26 @@ import time
 from datetime import datetime
 
 from .android_controller import AndroidController
-from .model import GeminiModel
+from .model import GeminiModel, VLLMModel
 from .prompt import build_system_prompt, load_examples
 
 
 class Agent:
     def __init__(self, config: dict):
-        self.model = GeminiModel(
-            api_key=config["GEMINI_API_KEY"],
-            model_name=config["GEMINI_MODEL"],
-        )
+        backend = config.get("BACKEND").lower()
+        if backend == "vllm":
+            self.model = VLLMModel(
+                api_key=config["VLLM_API_KEY"],
+                model_name=config["VLLM_MODEL"],
+                base_url=config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
+            )
+            print(f"[agent] Backend: vLLM — {config['VLLM_MODEL']} @ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}")
+        else:
+            self.model = GeminiModel(
+                api_key=config["GEMINI_API_KEY"],
+                model_name=config["GEMINI_MODEL"],
+            )
+            print(f"[agent] Backend: Gemini — {config['GEMINI_MODEL']}")
         self.controller = AndroidController(serial=config["DEVICE_SERIAL"])
         self.output_dir = config["OUTPUT_DIR"]
         self.max_steps = config.get("MAX_STEPS", 20)
