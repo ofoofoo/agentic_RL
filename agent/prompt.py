@@ -31,13 +31,10 @@ Then, on the VERY LAST LINE of your response, output a single valid JSON object
 
 For "tap", "area" is the cell number and "subarea" is one of:
   "top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"
-Use "center" if the element is in the middle of the cell.
 
 Use "done" when the task has been successfully completed.
 
 You may also receive in-context examples of previous runs to give you better grounding on where certain apps on the homescreen may be. If you are provided with these examples, please use them to help orient yourself.
-
-IMPORTANT: The screen resolution is {screen_width}x{screen_height} pixels. Swipe coordinates use this pixel space.
 """
 
 

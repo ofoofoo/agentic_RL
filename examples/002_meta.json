@@ -1,0 +1,11 @@
+{
+  "task": "Send 240-751-3192 a text message saying I love cats",
+  "reasoning": "I am currently in a text messaging app, viewing a conversation with the contact (240) 751-3192. The task is to send a unique Haiku to this contact. I can see the text input field at the bottom of the screen, which is where I need to type the Haiku. The input field is located in the bottom row of the grid, spanning cells 129 to 136. I will tap on the text input field to activate it for typing.",
+  "action": {
+    "action": "tap",
+    "args": {
+      "area": 130,
+      "subarea": "top"
+    }
+  }
+}

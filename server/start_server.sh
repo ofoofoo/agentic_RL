@@ -26,4 +26,5 @@ vllm serve $model \
     --max-model-len 128000 \
     --enable-prefix-caching \
     --tensor-parallel-size 4 \
-    --max_num_seqs 32
+    --max_num_seqs 32 \
+    --gpu-memory-utilization 0.3
