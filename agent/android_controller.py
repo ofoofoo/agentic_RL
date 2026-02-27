@@ -6,6 +6,7 @@ protocol in a typed Python client.
 """
 
 import os
+import time
 from ppadb.client import Client as AdbClient
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -64,20 +65,25 @@ class AndroidController:
         self,
         save_path: str,
         grid_path: str,
-    ) -> tuple[str, int, int]:
+    ) -> tuple[str, int, int, float, float]:
         """
         Capture a screenshot and annotate it with a numbered cell grid.
 
-        Screen is fixed at 1280x2856. Cells are 160x168px → 8 cols x 17 rows = 136 cells,
-        labeled 1…136 left-to-right, top-to-bottom.
-
-        Returns (grid_path, rows, cols).
+        Returns (grid_path, rows, cols, t_adb_s, t_preprocess_s).
+          - t_adb_s:        time for ADB screencap (phone → Mac transfer)
+          - t_preprocess_s: time for PIL decode + grid drawing + disk write
         """
-        CELL_W, CELL_H = 160, 168
-        cols = 1280 // CELL_W   # 8
-        rows = 2856 // CELL_H   # 17
+        CELL_W, CELL_H = 80, 119
+        cols = 1280 // CELL_W   # 16
+        rows = 2856 // CELL_H   # 24
 
+        # ── ADB capture ──────────────────────────────────────────────────
+        t0 = time.perf_counter()
         png_bytes: bytes = self.device.screencap()
+        t_adb = time.perf_counter() - t0
+
+        # ── Image preprocessing (decode → draw grid → save) ───────────
+        t0 = time.perf_counter()
         img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
 
         draw = ImageDraw.Draw(img)
@@ -94,7 +100,9 @@ class AndroidController:
 
         os.makedirs(os.path.dirname(grid_path) or ".", exist_ok=True)
         img.save(grid_path)
-        return grid_path, rows, cols
+        t_preprocess = time.perf_counter() - t0
+
+        return grid_path, rows, cols, t_adb, t_preprocess
 
 
 

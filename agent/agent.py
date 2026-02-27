@@ -47,10 +47,10 @@ class Agent:
     def build_prompt(self, task: str, step: int, history: list[dict]) -> str:
         history_text = ""
         if history:
-            lines = [
-                f"  Step {i + 1}: {json.dumps(h)}"
-                for i, h in enumerate(history)
-            ]
+            lines = []
+            for i, h in enumerate(history):
+                lines.append(f"  Step {i + 1} reasoning: {h['reasoning']}")
+                lines.append(f"  Step {i + 1} action:    {json.dumps(h['action'])}")
             history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
 
         return (
@@ -122,23 +122,29 @@ class Agent:
 
         rows, cols = 1, 1  # updated each step after screenshot
 
+        trajectory_start = time.perf_counter()
+
         for step in range(self.max_steps):
+            step_start = time.perf_counter()
+
             # screenshot
             screenshot_path = os.path.join(screenshot_dir, f"step_{step:03d}.png")
             grid_path = os.path.join(screenshot_dir, f"step_{step:03d}_grid.png")
-            grid_path, rows, cols = self.controller.screenshot_with_numbered_grid(screenshot_path, grid_path)
+            grid_path, rows, cols, t_adb, t_preprocess = self.controller.screenshot_with_numbered_grid(screenshot_path, grid_path)
             print(f"[step {step + 1}] Grid: {rows}r x {cols}c — saved to {grid_path}")
 
             # build prompt
             prompt = self.build_prompt(task, step, history)
 
-            # call gemini
+            # model inference
+            t0 = time.perf_counter()
             raw_response = self.model.generate(
                 prompt,
                 image_path=grid_path,
                 examples=self.examples,
             )
-            print(f"[step {step + 1}] Model response: {raw_response}")
+            t_inference = time.perf_counter() - t0
+            print(f"[step {step + 1}] Model response ({t_inference:.2f}s): {raw_response}")
             # parse json action
             action = None
             for line in reversed(raw_response.strip().splitlines()):
@@ -157,14 +163,30 @@ class Agent:
                 break
 
             # log step
+            t_step = time.perf_counter() - step_start
+            print(
+                f"[step {step + 1}] Latency "
+                f"adb={t_adb:.2f}s  "
+                f"preprocess={t_preprocess:.2f}s  "
+                f"inference={t_inference:.2f}s  "
+                f"step_total={t_step:.2f}s"
+            )
             record = {
                 "step": step,
                 "screenshot": screenshot_path,
                 "action": action,
                 "timestamp": time.time(),
+                "latency": {
+                    "adb_s":         round(t_adb, 3),
+                    "preprocess_s":  round(t_preprocess, 3),
+                    "inference_s":   round(t_inference, 3),
+                    "step_total_s":  round(t_step, 3),
+                },
             }
             with open(trajectory_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
+
+            history.append({"reasoning": raw_response, "action": action})
 
             # check for done
             if action.get("action") == "done":
@@ -182,4 +204,27 @@ class Agent:
         else:
             print(f"\n[agent] Reached max steps ({self.max_steps}) without finishing.")
 
+        t_total = time.perf_counter() - trajectory_start
+
+        # ── Latency summary ──────────────────────────────────────────────
+        print(f"\n{'─' * 58}")
+        print(f"  Latency summary  |  Task: {task}")
+        print(f"{'─' * 58}")
+        print(f"  {'Step':<6} {'ADB':>7} {'Preprocess':>11} {'Prompt':>8} {'Inference':>10} {'Total':>8}")
+        print(f"  {'─'*6} {'─'*7} {'─'*11} {'─'*8} {'─'*10} {'─'*8}")
+        with open(trajectory_path) as f:
+            for line in f:
+                rec = json.loads(line)
+                lat = rec.get("latency", {})
+                print(
+                    f"  {rec['step'] + 1:<6} "
+                    f"{lat.get('adb_s', 0):>6.2f}s "
+                    f"{lat.get('preprocess_s', 0):>10.2f}s "
+                    f"{lat.get('prompt_s', 0):>7.2f}s "
+                    f"{lat.get('inference_s', 0):>9.2f}s "
+                    f"{lat.get('step_total_s', 0):>7.2f}s"
+                )
+        print(f"{'─' * 58}")
+        print(f"  Total wall-clock: {t_total:.2f}s")
+        print(f"{'─' * 58}\n")
         print(f"[agent] Trajectory saved to: {trajectory_path}")
