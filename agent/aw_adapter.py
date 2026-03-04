@@ -16,10 +16,10 @@ from .model import GeminiModel, VLLMModel
 from .prompt import build_system_prompt
 
 # constants for setting the grid for screenshots
-CELL_W, CELL_H = 54, 96
+CELL_W, CELL_H = 54, 75
 SCREEN_W, SCREEN_H = 1080, 2400
 GRID_COLS = SCREEN_W // CELL_W   # 20
-GRID_ROWS = SCREEN_H // CELL_H   # 25
+GRID_ROWS = SCREEN_H // CELL_H   # 32
 
 # helper functions:
 def _draw_numbered_grid(img: Image.Image) -> Image.Image:
@@ -189,8 +189,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         t_step_total = time.perf_counter() - t_step_start
 
         print(
-            f"response: {raw_response} "
             f"[step {self._step_count}] "
+            f"raw response: {raw_response} "
             f"screenshot={t_screenshot:.2f}s  "
             f"preprocess={t_preprocess:.2f}s  "
             f"prompt={t_prompt:.2f}s  "

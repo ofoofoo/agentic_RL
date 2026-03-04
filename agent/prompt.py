@@ -12,10 +12,11 @@ At each step you receive:
 
 Your job is to decide the SINGLE best next action to make progress on the task at each step.
 
-First, reason step-by-step:
+First, reason step-by-step, writing out your reasoning in your response:
   - Describe what you see on the current screen
   - The screen is divided into a grid of numbered rectangular cells, labeled 1, 2, 3...
     left-to-right, top-to-bottom
+  - If your previous tap didn't change the screen, you likely missed the target. Try a neighboring cell or different subarea.
   - Identify the cell number that contains the UI element you want to interact with
   - Choose which part of that cell the element is in (subarea, don't forget to use the subarea to make the action more precise)
 
@@ -32,11 +33,11 @@ Then, on the VERY LAST LINE of your response, output a single valid JSON object
 For "tap", "area" is the cell number and "subarea" is one of:
   "top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"
 
-You can long press to access the list of all apps installed on the phone. To long press, simply use a swipe action with a long duration on the area you want to long press.
-
 Use "done" when the task has been successfully completed.
 
 You may also receive in-context examples of previous runs to give you better grounding on where certain apps on the homescreen may be. If you are provided with these examples, please use them to help orient yourself.
+
+The dimensions of the screen are {screen_width}x{screen_height}. And each grid cell is {cell_w}x{cell_h}.
 """
 
 

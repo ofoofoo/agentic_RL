@@ -13,19 +13,26 @@ if [[ ! -f "$KEY_FILE" ]]; then
   exit 1
 fi
 
-export VLLM_API_KEY="$(cat "$KEY_FILE")"
+#model="Qwen/Qwen3-VL-8B-Instruct"
+model=Qwen/Qwen3.5-9B
 
-# model="Qwen/Qwen2.5-VL-32B-Instruct"
-#model=Qwen/Qwen3.5-9B
-model=Qwen/Qwen3-VL-8B-Instruct
-# model="nvidia/Cosmos-Reason1-7B"
-
- vllm serve $model \
+# ── SGLang (active) ──────────────────────────────────────────────────────────
+SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \
+    --model $model \
     --host "$HOST" \
     --port "$PORT" \
     --dtype bfloat16 \
-    --max-model-len 128000 \
-    --enable-prefix-caching \
+    --context-length 131072 \
     --tensor-parallel-size 4 \
-    --max_num_seqs 32 \
-    #--hf-overrides '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
+    --api-key "$(cat "$KEY_FILE")"
+
+# vllm
+# export VLLM_API_KEY="$(cat "$KEY_FILE")"
+# vllm serve $model \
+#     --host "$HOST" \
+#     --port "$PORT" \
+#     --dtype bfloat16 \
+#     --max-model-len 128000 \
+#     --enable-prefix-caching \
+#     --tensor-parallel-size 4 \
+#     --max_num_seqs 32
