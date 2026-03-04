@@ -24,7 +24,7 @@ model=Qwen/Qwen3-VL-8B-Instruct
     --host "$HOST" \
     --port "$PORT" \
     --dtype bfloat16 \
-    --max-model-len 1010000 \
+    --max-model-len 128000 \
     --enable-prefix-caching \
     --tensor-parallel-size 4 \
     --max_num_seqs 32 \
