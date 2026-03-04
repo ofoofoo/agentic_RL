@@ -199,7 +199,6 @@ class Agent:
             except Exception as e:
                 print(f"[step {step + 1}] ERROR executing action: {e}")
                 break
-            time.sleep(3.0) # give UI sufficient time to update
 
         else:
             print(f"\n[agent] Reached max steps ({self.max_steps}) without finishing.")

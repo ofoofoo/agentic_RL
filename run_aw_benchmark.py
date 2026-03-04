@@ -1,0 +1,187 @@
+import argparse
+import json
+import os
+import time
+from datetime import datetime
+
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+os.environ["GRPC_TRACE"] = "none"
+
+import yaml
+from dotenv import load_dotenv
+
+from android_world import registry
+from android_world.env import env_launcher
+from agent.aw_adapter import AWAgentAdapter
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run AndroidWorld benchmark")
+    parser.add_argument(
+        "--tasks", type=str, default=None,
+        help="Comma-separated task names (e.g. ContactsAddContact,ClockStopWatchRunning). "
+             "Leave empty to run all tasks.",
+    )
+    parser.add_argument(
+        "--backend", type=str, default="gemini", choices=["gemini", "vllm"],
+        help="Model backend to use.",
+    )
+    parser.add_argument(
+        "--n_task_combinations", type=int, default=1,
+        help="Number of random parameter combos per task.",
+    )
+    parser.add_argument(
+        "--console_port", type=int, default=5554,
+        help="Emulator console port (from `adb devices`).",
+    )
+    parser.add_argument(
+        "--perform_emulator_setup", action="store_true",
+        help="One-time setup: installs AndroidWorld apps on the emulator.",
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default="./output/aw_runs",
+        help="Directory for screenshots and results.",
+    )
+    args = parser.parse_args()
+
+    load_dotenv()
+    with open("config.yaml") as f:
+        config = yaml.safe_load(f)
+    config["BACKEND"] = args.backend
+    config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
+    config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
+
+    adb_path = os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
+    env = env_launcher.load_and_setup_env( # launch aw env
+        console_port=args.console_port,
+        emulator_setup=args.perform_emulator_setup,
+        adb_path=adb_path,
+    )
+    env.reset(go_home=True)
+
+    task_registry = registry.TaskRegistry()
+    aw_registry = task_registry.get_registry(task_registry.ANDROID_WORLD_FAMILY)
+    if args.tasks:
+        task_names = [t.strip() for t in args.tasks.split(",")]
+        for name in task_names:
+            if name not in aw_registry:
+                raise ValueError(
+                    f"Task '{name}' not in registry. "
+                    f"Available: {sorted(aw_registry.keys())}"
+                )
+    else:
+        task_names = sorted(aw_registry.keys())
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir = os.path.join(args.output_dir, run_id)
+    os.makedirs(session_dir, exist_ok=True)
+    results = []
+    print(f"\n{'=' * 60}")
+    print(f"AndroidWorld Benchmark: {len(task_names)} tasks x {args.n_task_combinations} combos")
+    print(f"Backend: {args.backend}  |  Output directory: {session_dir}")
+    print(f"{'=' * 60}\n")
+
+    for task_name in task_names:
+        task_type = aw_registry[task_name]
+
+        for combo_idx in range(args.n_task_combinations):
+            params = task_type.generate_random_params()
+            task = task_type(params)
+
+            env.reset(go_home=True) # reset env to home screen
+            task.initialize_task(env) # initialize task
+
+            goal = str(task.goal)
+            max_steps = int(task.complexity * 10)
+
+            print(f"[{task_name}] (combo {combo_idx + 1}/{args.n_task_combinations})")
+            print(f"Goal: {goal}")
+            print(f"Max steps: {max_steps}")
+
+            task_dir = os.path.join(session_dir, f"{task_name}_combo{combo_idx}")
+            os.makedirs(task_dir, exist_ok=True)
+
+            adapter = AWAgentAdapter(env=env, config=config, output_dir=task_dir, transition_pause=2.0)
+            adapter.set_max_steps(max_steps)
+            adapter.reset_episode()
+
+            # run agent loop
+            t_start = time.perf_counter()
+            is_done = False
+            step_records: list[dict] = []
+            for step_idx in range(max_steps):
+                response = adapter.step(goal) # main loop driver
+                if response.data and "latency" in response.data:
+                    step_records.append(response.data)
+                if task.is_successful(env) == 1.0: # if the task is completed successfully, break
+                    break
+                if response.done:
+                    is_done = True
+                    break
+            t_elapsed = time.perf_counter() - t_start
+            success = is_done and task.is_successful(env) == 1.0
+
+            status = "✅" if success else "❌"
+            print(f"{status} {task_name} — {'success' if success else 'failed'} "
+                  f"({step_idx + 1} steps, {t_elapsed:.1f}s)")
+
+            if step_records:
+                print(f"{'Step':>4}  {'Screenshot':>10}  {'Preprocess':>10}  {'Prompt':>7}  {'Inference':>9}  {'Total':>7}")
+                print("   " + "-" * 58)
+                for rec in step_records:
+                    lat = rec["latency"]
+                    print(f"   {rec['step']:>4}  "
+                          f"{lat['screenshot_s']:>9.2f}s  "
+                          f"{lat['preprocess_s']:>9.2f}s  "
+                          f"{lat['prompt_s']:>6.2f}s  "
+                          f"{lat['inference_s']:>8.2f}s  "
+                          f"{lat['step_total_s']:>6.2f}s")
+                def avg(key): return sum(r["latency"][key] for r in step_records) / len(step_records)
+                print("   " + "-" * 58)
+                print(f"   {'avg':>4}  {avg('screenshot_s'):>9.2f}s  {avg('preprocess_s'):>9.2f}s  "
+                      f"{avg('prompt_s'):>6.2f}s  {avg('inference_s'):>8.2f}s  {avg('step_total_s'):>6.2f}s")
+
+            results.append({
+                "task": task_name,
+                "combo": combo_idx,
+                "goal": goal,
+                "success": success,
+                "steps": step_idx + 1,
+                "time_s": round(t_elapsed, 2),
+                "latency_avg": {
+                    "screenshot_s":  round(sum(r["latency"]["screenshot_s"]  for r in step_records) / len(step_records), 3),
+                    "preprocess_s":  round(sum(r["latency"]["preprocess_s"]  for r in step_records) / len(step_records), 3),
+                    "prompt_s":      round(sum(r["latency"]["prompt_s"]      for r in step_records) / len(step_records), 3),
+                    "inference_s":   round(sum(r["latency"]["inference_s"]   for r in step_records) / len(step_records), 3),
+                    "step_total_s":  round(sum(r["latency"]["step_total_s"]  for r in step_records) / len(step_records), 3),
+                } if step_records else {},
+            })
+
+            try:
+                task.tear_down(env)
+            except Exception:
+                pass
+
+    n_success = sum(1 for r in results if r["success"])
+    n_total = len(results)
+    accuracy = (n_success / n_total * 100) if n_total else 0
+
+    print(f"\n{'=' * 60}")
+    print(f"RESULTS  ({run_id})")
+    print(f"{'=' * 60}")
+    print(f"Tasks run:  {n_total}")
+    print(f"Successes:  {n_success}")
+    print(f"Accuracy:   {accuracy:.1f}%")
+    if n_success > 0:
+        avg_steps = sum(r["steps"] for r in results if r["success"]) / n_success
+        print(f"Avg steps (success): {avg_steps:.1f}")
+    print(f"{'=' * 60}")
+
+    results_path = os.path.join(session_dir, "results.json")
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Results saved to: {results_path}")
+    env.close()
+
+if __name__ == "__main__":
+    main()

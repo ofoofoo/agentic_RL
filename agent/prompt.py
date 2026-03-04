@@ -17,7 +17,7 @@ First, reason step-by-step:
   - The screen is divided into a grid of numbered rectangular cells, labeled 1, 2, 3...
     left-to-right, top-to-bottom
   - Identify the cell number that contains the UI element you want to interact with
-  - Choose which part of that cell the element is in (subarea)
+  - Choose which part of that cell the element is in (subarea, don't forget to use the subarea to make the action more precise)
 
 Then, on the VERY LAST LINE of your response, output a single valid JSON object
 (no markdown fences, no trailing text) using one of these action types:
