@@ -13,8 +13,12 @@ if [[ ! -f "$KEY_FILE" ]]; then
   exit 1
 fi
 
-#model="Qwen/Qwen3-VL-8B-Instruct"
-model=Qwen/Qwen3.5-9B
+# Set CUDA_HOME so FlashInfer can find nvcc for JIT compilation
+# Adjust this path to match your actual CUDA install (run 'which nvcc' to find it)
+export CUDA_HOME="/usr/local/cuda-12.2"
+export PATH="$CUDA_HOME/bin:$PATH"
+model=Qwen/Qwen3-VL-8B-Instruct
+# model=Qwen/Qwen3.5-9B
 
 # ── SGLang (active) ──────────────────────────────────────────────────────────
 SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \

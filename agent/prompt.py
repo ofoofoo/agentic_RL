@@ -1,7 +1,7 @@
 import json
 import os
 
-def build_system_prompt(screen_width: int, screen_height: int) -> str:
+def build_system_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int) -> str:
     return f"""\
 You are an agent controlling an Android phone via a screen-reading loop.
 

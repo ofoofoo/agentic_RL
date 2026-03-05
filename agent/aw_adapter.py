@@ -130,7 +130,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 model_name=config["GEMINI_MODEL"],
             )
 
-        self.system_prompt = build_system_prompt(SCREEN_W, SCREEN_H)
+        self.system_prompt = build_system_prompt(SCREEN_W, SCREEN_H, CELL_W, CELL_H)
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -197,6 +197,10 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             f"inference={t_inference:.2f}s  "
             f"total={t_step_total:.2f}s"
         )
+
+        if not raw_response:
+            print(f"  [step {self._step_count}] ERROR: model returned empty/None response (check model name in config.yaml matches the server)")
+            return base_agent.AgentInteractionResult(done=True, data={"error": "empty_response"})
 
         # 5. parse action fron JSON
         action = None
