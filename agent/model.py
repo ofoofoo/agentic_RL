@@ -89,4 +89,5 @@ class VLLMModel:
         messages.append({"role": "user", "content": content})
 
         response = self.client.chat.completions.create(model=self.model_name, messages=messages)
+        print(f"response in the model class: {response}")
         return response.choices[0].message.content

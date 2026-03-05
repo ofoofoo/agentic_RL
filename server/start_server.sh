@@ -17,26 +17,26 @@ fi
 # Adjust this path to match your actual CUDA install (run 'which nvcc' to find it)
 export CUDA_HOME="/usr/local/cuda-12.2"
 export PATH="$CUDA_HOME/bin:$PATH"
-model=Qwen/Qwen3-VL-8B-Instruct
-# model=Qwen/Qwen3.5-9B
+#model=Qwen/Qwen3-VL-8B-Instruct
+model=Qwen/Qwen3.5-9B
 
-# ── SGLang (active) ──────────────────────────────────────────────────────────
-SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \
-    --model $model \
+# ── vLLM nightly (active) ────────────────────────────────────────────────────
+export VLLM_API_KEY="$(cat "$KEY_FILE")"
+vllm serve $model \
     --host "$HOST" \
     --port "$PORT" \
     --dtype bfloat16 \
-    --context-length 131072 \
+    --max-model-len 8192 \
+    --enable-prefix-caching \
     --tensor-parallel-size 4 \
-    --api-key "$(cat "$KEY_FILE")"
+    --max_num_seqs 32
 
-# vllm
-# export VLLM_API_KEY="$(cat "$KEY_FILE")"
-# vllm serve $model \
+# ── SGLang (commented out) ───────────────────────────────────────────────────
+# SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \
+#     --model $model \
 #     --host "$HOST" \
 #     --port "$PORT" \
-#     --dtype bfloat16 \
-#     --max-model-len 128000 \
-#     --enable-prefix-caching \
+#     --dtype auto \
+#     --context-length 131072 \
 #     --tensor-parallel-size 4 \
-#     --max_num_seqs 32
+#     --api-key "$(cat "$KEY_FILE")"
