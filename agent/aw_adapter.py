@@ -1,10 +1,18 @@
+from __future__ import annotations
 """
 Wraps agent logic into AndroidWorld's EnvironmentInteractingAgent interface.
+
+Dual-mode UI interaction:
+  1. Element mode (primary) — uiautomator dump + labeled elements
+  2. Grid mode (fallback) — numbered grid overlay
 """
 
 import io
 import json
 import os
+import re
+import subprocess
+import tempfile
 import time
 
 from PIL import Image, ImageDraw, ImageFont
@@ -12,10 +20,16 @@ from PIL import Image, ImageDraw, ImageFont
 from android_world.agents import base_agent
 from android_world.env import json_action
 
+from .android_controller import UIElement, _traverse_tree, MIN_DIST
+from .agent import parse_element_response, parse_grid_response
 from .model import GeminiModel, VLLMModel
-from .prompt import build_system_prompt
+from .prompt import (
+    build_element_prompt,
+    build_grid_prompt,
+    build_element_text_list,
+)
 
-# constants for setting the grid for screenshots
+# constants for grid fallback
 CELL_W, CELL_H = 54, 75
 SCREEN_W, SCREEN_H = 1080, 2400
 GRID_COLS = SCREEN_W // CELL_W   # 20
@@ -40,6 +54,105 @@ def _draw_numbered_grid(img: Image.Image) -> Image.Image:
     return img
 
 
+# ── Helper: draw element labels ─────────────────────────────────────
+def _draw_element_labels(img: Image.Image, elem_list: list[UIElement]) -> Image.Image:
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=28)
+    except OSError:
+        font = ImageFont.load_default()
+
+    for idx, elem in enumerate(elem_list, 1):
+        (x1, y1), (x2, y2) = elem.bbox
+        # bounding box
+        draw.rectangle([x1, y1, x2, y2], outline=(255, 116, 113), width=3)
+        # label at center
+        cx, cy = elem.center
+        label = str(idx)
+        tw = len(label) * 14 + 8
+        th = 28
+        lx = cx - tw // 2
+        ly = cy - th // 2
+        draw.rectangle([lx, ly, lx + tw, ly + th], fill=(0, 0, 0, 180))
+        draw.text((lx + 4, ly + 2), label, fill=(255, 116, 113), font=font)
+    return img
+
+
+# ── Helper: dump UI hierarchy via ADB ───────────────────────────────
+def _dump_ui_hierarchy(adb_path: str = "adb") -> list[UIElement]:
+    """
+    Run `uiautomator dump` via subprocess and parse the result.
+    Works inside AndroidWorld where we don't have a ppadb device handle.
+    On timeout (common mid-animation or with WebViews), kills the stuck
+    uiautomator process and retries once before falling back to grid mode.
+    """
+    device_xml = "/sdcard/ui_dump.xml"
+    tmp_path = None
+
+    def _do_dump(timeout: int) -> bool:
+        """Returns True if dump succeeded."""
+        result = subprocess.run(
+            [adb_path, "shell", "uiautomator", "dump", device_xml],
+            capture_output=True, timeout=timeout,
+        )
+        # uiautomator prints "UI hierchary dumped to: ..." on success
+        return b"dumped" in result.stdout or result.returncode == 0
+
+    def _kill_uiautomator():
+        """Kill any stuck uiautomator process on the device."""
+        subprocess.run(
+            [adb_path, "shell", "pkill", "-f", "uiautomator"],
+            capture_output=True, timeout=5,
+        )
+
+    try:
+        try:
+            success = _do_dump(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("[aw_adapter] uiautomator timed out — killing and retrying...")
+            _kill_uiautomator()
+            try:
+                success = _do_dump(timeout=15)
+            except subprocess.TimeoutExpired:
+                print("[aw_adapter] uiautomator retry also timed out — falling back to grid")
+                return []
+
+        # pull the XML
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
+            tmp_path = tmp.name
+        subprocess.run(
+            [adb_path, "pull", device_xml, tmp_path],
+            capture_output=True, timeout=10,
+        )
+        # parse
+        clickable = _traverse_tree(tmp_path, "clickable", add_index=True)
+        focusable = _traverse_tree(tmp_path, "focusable", add_index=True)
+
+        merged = list(clickable)
+        for fe in focusable:
+            close = False
+            for ce in clickable:
+                dist = (
+                    (fe.center[0] - ce.center[0]) ** 2
+                    + (fe.center[1] - ce.center[1]) ** 2
+                ) ** 0.5
+                if dist <= MIN_DIST:
+                    close = True
+                    break
+            if not close:
+                merged.append(fe)
+        return merged
+    except Exception as e:
+        print(f"\033[33m[aw_adapter] WARNING: uiautomator dump failed: {e}\033[0m")
+        return []
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
 def _area_to_xy(area: int, subarea: str) -> tuple[int, int]:
     area -= 1
     row, col = area // GRID_COLS, area % GRID_COLS
@@ -59,35 +172,70 @@ def _area_to_xy(area: int, subarea: str) -> tuple[int, int]:
     return x0 + dx, y0 + dy
 
 
-def _our_action_to_aw(action: dict) -> json_action.JSONAction:
-    """JSON action dict -> AndroidWorld JSONAction."""
-    name = action["action"]
-    args = action.get("args", {})
+def _action_to_aw(
+    parsed_action: dict,
+    elem_list: list[UIElement] | None = None,
+) -> json_action.JSONAction:
+    """Convert parsed action to AndroidWorld JSONAction."""
+    name = parsed_action["action"]
 
+    # ── Element-mode actions ─────────────────────────────────────────
     if name == "tap":
-        if "area" in args:
-            x, y = _area_to_xy(args["area"], args.get("subarea", "center"))
+        idx = parsed_action["element"]
+        if elem_list and 1 <= idx <= len(elem_list):
+            x, y = elem_list[idx - 1].center
         else:
-            x, y = args["x"], args["y"]
+            raise ValueError(f"Element {idx} out of range (have {len(elem_list or [])})")
         return json_action.JSONAction(action_type=json_action.CLICK, x=x, y=y)
 
+    if name == "long_press":
+        idx = parsed_action["element"]
+        if elem_list and 1 <= idx <= len(elem_list):
+            x, y = elem_list[idx - 1].center
+        else:
+            raise ValueError(f"Element {idx} out of range")
+        return json_action.JSONAction(action_type=json_action.LONG_PRESS, x=x, y=y)
+
     if name == "swipe":
-        dx = args["x2"] - args["x1"]
-        dy = args["y2"] - args["y1"]
+        idx = parsed_action["element"]
+        if elem_list and 1 <= idx <= len(elem_list):
+            x, y = elem_list[idx - 1].center
+        else:
+            raise ValueError(f"Element {idx} out of range")
+        return json_action.JSONAction(
+            action_type=json_action.SWIPE,
+            x=x, y=y,
+            direction=parsed_action["direction"],
+        )
+
+    # ── Grid-mode actions ────────────────────────────────────────────
+    if name == "tap_grid":
+        x, y = _area_to_xy(parsed_action["area"], parsed_action.get("subarea", "center"))
+        return json_action.JSONAction(action_type=json_action.CLICK, x=x, y=y)
+
+    if name == "long_press_grid":
+        x, y = _area_to_xy(parsed_action["area"], parsed_action.get("subarea", "center"))
+        return json_action.JSONAction(action_type=json_action.LONG_PRESS, x=x, y=y)
+
+    if name == "swipe_grid":
+        sx, sy = _area_to_xy(parsed_action["start_area"], parsed_action["start_subarea"])
+        ex, ey = _area_to_xy(parsed_action["end_area"], parsed_action["end_subarea"])
+        dx, dy = ex - sx, ey - sy
         if abs(dx) >= abs(dy):
             direction = "right" if dx > 0 else "left"
         else:
             direction = "down" if dy > 0 else "up"
         return json_action.JSONAction(
             action_type=json_action.SWIPE,
-            x=args["x1"], y=args["y1"],
+            x=sx, y=sy,
             direction=direction,
         )
 
-    if name == "type":
+    # ── Common actions ───────────────────────────────────────────────
+    if name == "text":
         return json_action.JSONAction(
             action_type=json_action.INPUT_TEXT,
-            text=args["text"],
+            text=parsed_action["text"],
         )
 
     if name == "back":
@@ -130,30 +278,46 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 model_name=config["GEMINI_MODEL"],
             )
 
-        self.system_prompt = build_system_prompt(SCREEN_W, SCREEN_H, CELL_W, CELL_H)
+        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
+        self.grid_prompt = build_grid_prompt(SCREEN_W, SCREEN_H, CELL_W, CELL_H)
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
+        # ADB path for uiautomator
+        self._adb_path = os.path.expanduser(
+            config.get("ADB_PATH", "~/Library/Android/sdk/platform-tools/adb")
+        )
+
         self._history: list[dict] = []
         self._step_count = 0
+        self._grid_on = False
+        self._elem_list: list[UIElement] = []
 
     def reset_episode(self) -> None:
         self._history = []
         self._step_count = 0
+        self._grid_on = False
+        self._elem_list = []
 
     def _build_prompt(self, goal: str) -> str:
+        sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
+
         history_text = ""
         if self._history:
             lines = []
             for i, h in enumerate(self._history):
-                lines.append(f"  Step {i + 1} reasoning: {h['reasoning']}")
-                lines.append(f"  Step {i + 1} action:    {json.dumps(h['action'])}")
+                lines.append(f"  Step {i + 1}: {h['summary']}")
             history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+
+        elem_text = ""
+        if not self._grid_on and self._elem_list:
+            elem_text = build_element_text_list(self._elem_list) + "\n\n"
 
         max_steps = self._max_steps or 25
         return (
-            f"{self.system_prompt}\n\n"
+            f"{sys_prompt}\n\n"
             f"Task: {goal}\n\n"
+            f"{elem_text}"
             f"{history_text}"
             f"Current step: {self._step_count + 1} / {max_steps}\n"
             f"What is the next action?"
@@ -170,73 +334,111 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         pixels = state.pixels  # numpy array (H, W, 3)
         img = Image.fromarray(pixels).convert("RGB")
 
-        # 2. pre-process and draw grid
+        # 2. observation: element mode or grid mode
         t0 = time.perf_counter()
-        grid_img = _draw_numbered_grid(img)
-        grid_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}_grid.png")
-        grid_img.save(grid_path)
+        if self._grid_on: # this is grid mode
+            grid_img = _draw_numbered_grid(img.copy())
+            image_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}_grid.png")
+            grid_img.save(image_path)
+            self._elem_list = []
+            mode_str = f"grid ({GRID_ROWS}x{GRID_COLS})"
+        else: # this is element mode
+            # dump UI hierarchy
+            self._elem_list = _dump_ui_hierarchy(self._adb_path)
+            labeled_img = _draw_element_labels(img.copy(), self._elem_list)
+            image_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}_labeled.png")
+            labeled_img.save(image_path)
+            mode_str = f"element ({len(self._elem_list)} elements)"
         t_preprocess = time.perf_counter() - t0
 
-        # 3. build prompt with ICL examples
+        # 3. build prompt
         t0 = time.perf_counter()
         prompt = self._build_prompt(goal)
         t_prompt = time.perf_counter() - t0
 
         # 4. inference
         t0 = time.perf_counter()
-        raw_response = self.model.generate(prompt, image_path=grid_path)
+        raw_response = self.model.generate(prompt, image_path=image_path)
         t_inference = time.perf_counter() - t0
         t_step_total = time.perf_counter() - t_step_start
 
         print(
-            f"[step {self._step_count}] "
-            f"raw response: {raw_response} "
+            f"\033[36m ====================[step {self._step_count}]mode={mode_str}====================\033[0m"
             f"screenshot={t_screenshot:.2f}s  "
             f"preprocess={t_preprocess:.2f}s  "
-            f"prompt={t_prompt:.2f}s  "
             f"inference={t_inference:.2f}s  "
             f"total={t_step_total:.2f}s"
+            f"\nTASK: {goal}"
         )
+        print(raw_response)
 
         if not raw_response:
-            print(f"  [step {self._step_count}] ERROR: model returned empty/None response (check model name in config.yaml matches the server)")
+            print(f"  [step {self._step_count}] ERROR: model returned empty/None response")
             return base_agent.AgentInteractionResult(done=True, data={"error": "empty_response"})
 
-        # 5. parse action fron JSON
-        action = None
-        for line in reversed(raw_response.strip().splitlines()):
-            line = line.strip().removeprefix("```json").removesuffix("```").strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                action = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                continue
+        # 5. parse structured response
+        if self._grid_on:
+            result = parse_grid_response(raw_response)
+        else:
+            result = parse_element_response(raw_response)
 
-        if action is None:
-            print(f"  [step {self._step_count}] ERROR: no valid JSON in response")
-            return base_agent.AgentInteractionResult(done=True, data={"error": "no_json"})
+        if result is None:
+            print(f"  [step {self._step_count}] ERROR: could not parse structured response")
+            print("  Raw response was:", repr(raw_response))
+            return base_agent.AgentInteractionResult(done=True, data={"error": "parse_failed"})
 
-        is_done = action.get("action") == "done"
+        parsed_action = result["parsed_action"]
+        is_done = parsed_action["action"] == "done"
 
-        # 6. execute action
+        # 6. handle grid toggle
+        if parsed_action["action"] == "grid":
+            self._grid_on = True
+            print(f"  [step {self._step_count}] Switching to grid mode")
+            self._history.append({
+                "summary": result.get("summary", "Switched to grid mode"),
+                "action": parsed_action,
+            })
+            # don't execute, just re-loop
+            return base_agent.AgentInteractionResult(
+                done=False,
+                data={
+                    "step": self._step_count,
+                    "action": parsed_action,
+                    "latency": {
+                        "screenshot_s":  round(t_screenshot, 3),
+                        "preprocess_s":  round(t_preprocess, 3),
+                        "prompt_s":      round(t_prompt, 3),
+                        "inference_s":   round(t_inference, 3),
+                        "step_total_s":  round(t_step_total, 3),
+                    },
+                    "image_path": image_path,
+                    "mode": "grid" if self._grid_on else "element",
+                },
+            )
+        else:
+            # after any non-grid action, switch back to element mode
+            self._grid_on = False
+
+        # 7. execute action
         if not is_done:
             try:
-                aw_action = _our_action_to_aw(action)
+                aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)
                 self._env.execute_action(aw_action)
             except Exception as e:
                 print(f"[step {self._step_count}] ERROR executing: {e}")
                 return base_agent.AgentInteractionResult(done=True, data={"error": str(e)})
 
-        # 7. update history
-        self._history.append({"reasoning": raw_response, "action": action})
+        # 8. update history
+        self._history.append({
+            "summary": result.get("summary", raw_response[:100]),
+            "action": parsed_action,
+        })
 
         return base_agent.AgentInteractionResult(
             done=is_done,
             data={
                 "step": self._step_count,
-                "action": action,
+                "action": parsed_action,
                 "latency": {
                     "screenshot_s":  round(t_screenshot, 3),
                     "preprocess_s":  round(t_preprocess, 3),
@@ -244,6 +446,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     "inference_s":   round(t_inference, 3),
                     "step_total_s":  round(t_step_total, 3),
                 },
-                "grid_path": grid_path,
+                "image_path": image_path,
+                "mode": "grid" if self._grid_on else "element",
+                "n_elements": len(self._elem_list),
             },
         )

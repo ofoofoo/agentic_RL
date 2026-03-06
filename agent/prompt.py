@@ -1,44 +1,132 @@
 import json
 import os
 
-def build_system_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int) -> str:
+
+def build_element_prompt(screen_width: int, screen_height: int) -> str:
+    """System prompt for UI-hierarchy (element) mode — primary mode."""
     return f"""\
 You are an agent controlling an Android phone via a screen-reading loop.
 
 At each step you receive:
-  1. A screenshot of the current screen overlaid with a numbered cell grid
-  2. The overall task you are trying to complete
-  3. A brief history of the actions you have already taken. Please use this history to inform your decision making.
+  1. A screenshot of the current screen with interactive UI elements labeled by numbers
+  2. A text list describing each labeled element (its type, text, and content description)
+  3. The overall task you are trying to complete
+  4. A brief history of the actions you have already taken
 
-Your job is to decide the SINGLE best next action to make progress on the task at each step.
+Your job is to decide the SINGLE best next action to make progress on the task.
 
-First, reason step-by-step, writing out your reasoning in your response:
-  - Describe what you see on the current screen
-  - The screen is divided into a grid of numbered rectangular cells, labeled 1, 2, 3...
-    left-to-right, top-to-bottom
-  - If your previous tap didn't change the screen, you likely missed the target. Try a neighboring cell or different subarea.
-  - Identify the cell number that contains the UI element you want to interact with
-  - Choose which part of that cell the element is in (subarea, don't forget to use the subarea to make the action more precise)
+Your response MUST follow this exact format (four sections, each on its own line):
+  Observation: <Describe what you see on the current screen>
+  Thought: <To complete the given task, what is the next step I should do>
+  Action: <The function call with correct parameters, OR FINISH if done>
+  Summary: <Summarize your past actions along with your latest action in one sentence>
 
-Then, on the VERY LAST LINE of your response, output a single valid JSON object
-(no markdown fences, no trailing text) using one of these action types:
+The action must follow the exact format of the function calls, as this is crucial to parsing and execution.
 
-  {{"action": "tap",   "args": {{"area": <int>, "subarea": "<string>"}}}}
-  {{"action": "swipe", "args": {{"x1": <int>, "y1": <int>, "x2": <int>, "y2": <int>, "duration_ms": <int>}}}}
-  {{"action": "type",  "args": {{"text": "<string>"}}}}
-  {{"action": "back",  "args": {{}}}}
-  {{"action": "home",  "args": {{}}}}
-  {{"action": "done",  "args": {{}}}}
+Available actions (use exactly one per step):
 
-For "tap", "area" is the cell number and "subarea" is one of:
-  "top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"
+  tap(element)
+    Tap the UI element labeled with the given number.
+    Example: tap(5)
 
-Use "done" when the task has been successfully completed.
+  text(text_input)
+    Type text into the currently focused input field. Use when a keyboard is visible.
+    Example: text("Hello, world!")
 
-You may also receive in-context examples of previous runs to give you better grounding on where certain apps on the homescreen may be. If you are provided with these examples, please use them to help orient yourself.
+  long_press(element)
+    Long press the UI element labeled with the given number.
+    Example: long_press(5)
 
-The dimensions of the screen are {screen_width}x{screen_height}. And each grid cell is {cell_w}x{cell_h}.
+  swipe(element, direction, dist)
+    Swipe starting from a labeled element number (just the integer, not a variable name).
+    direction: "up", "down", "left", or "right"
+    dist: "short", "medium", or "long"
+    Example: swipe(3, "up", "medium")   ← correct
+    WRONG:   swipe(element_3, "up", "medium")  ← do NOT use variable names
+
+  grid()
+    Call this ONLY if the target element is NOT visible as a labeled number. This
+    switches to grid overlay mode where you can target any screen area.
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+CRITICAL: The Action line must use ONLY the function names listed above, with plain integer
+arguments (e.g. tap(6), swipe(3, "up", "medium")). Do NOT use variable names, natural language,
+or any other format. The system will fail to execute any action that doesn't match exactly.
+
+The screen dimensions are {screen_width}x{screen_height}.
 """
+
+
+def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int) -> str:
+    """System prompt for grid-overlay mode — fallback when elements aren't labeled."""
+    return f"""\
+You are an agent controlling an Android phone. The screen is overlaid with a numbered grid.
+Each grid area is labeled with an integer in the top-left corner.
+
+Your response MUST follow this exact format:
+  Observation: <Describe what you see on the current screen>
+  Thought: <To complete the given task, what is the next step I should do>
+  Action: <The function call with correct parameters, OR FINISH if done>
+  Summary: <Summarize your past actions along with your latest action in one sentence>
+
+Available actions:
+
+  tap(area, subarea)
+    Tap a grid area. "subarea" is one of: center, top-left, top, top-right,
+    left, right, bottom-left, bottom, bottom-right.
+    Example: tap(5, "center")
+
+  long_press(area, subarea)
+    Long press a grid area. Same subarea options as tap.
+    Example: long_press(7, "top-left")
+
+  swipe(start_area, start_subarea, end_area, end_subarea)
+    Swipe from one grid area to another.
+    Example: swipe(21, "center", 25, "right")
+
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello")
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+The screen dimensions are {screen_width}x{screen_height}. Each grid cell is {cell_w}x{cell_h}.
+"""
+
+
+def build_element_text_list(elem_list) -> str:
+    """
+    Build a text description of labeled elements to include in the prompt,
+    giving the model both visual AND textual grounding.
+    """
+    if not elem_list:
+        return "No interactive elements detected on screen."
+    lines = ["Interactive elements on screen:"]
+    for idx, elem in enumerate(elem_list, 1):
+        parts = [f"  {idx}."]
+        # element type from attrib
+        parts.append(f"[{elem.attrib}]")
+        if elem.text:
+            parts.append(f'text="{elem.text}"')
+        if elem.content_desc:
+            parts.append(f'desc="{elem.content_desc}"')
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
 
 
 def load_examples(examples_dir: str) -> list[dict]:

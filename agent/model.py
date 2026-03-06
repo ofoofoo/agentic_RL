@@ -88,6 +88,9 @@ class VLLMModel:
             content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}})
         messages.append({"role": "user", "content": content})
 
-        response = self.client.chat.completions.create(model=self.model_name, messages=messages)
-        print(f"response in the model class: {response}")
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
         return response.choices[0].message.content

@@ -4,8 +4,8 @@ import os
 import time
 from datetime import datetime
 
-os.environ["GRPC_VERBOSITY"] = "ERROR"
-os.environ["GRPC_TRACE"] = "none"
+os.environ["GRPC_VERBOSITY"] = "NONE"
+os.environ["GRPC_TRACE"] = ""
 
 import yaml
 from dotenv import load_dotenv
@@ -92,7 +92,7 @@ def main():
             task.initialize_task(env) # initialize task
 
             goal = str(task.goal)
-            max_steps = int(task.complexity * 10)
+            max_steps = int(task.complexity * 20)
 
             print(f"[{task_name}] (combo {combo_idx + 1}/{args.n_task_combinations})")
             print(f"Goal: {goal}")
@@ -107,19 +107,19 @@ def main():
 
             # run agent loop
             t_start = time.perf_counter()
-            is_done = False
             step_records: list[dict] = []
             for step_idx in range(max_steps):
                 response = adapter.step(goal) # main loop driver
                 if response.data and "latency" in response.data:
                     step_records.append(response.data)
-                if task.is_successful(env) == 1.0: # if the task is completed successfully, break
+                if response.done: # model said FINISH — stop immediately
                     break
-                if response.done:
-                    is_done = True
+                time.sleep(1.0) # give DB writes / UI transitions time to commit
+                if task.is_successful(env) == 1.0:
+                    print("\033[32menv confirms task complete!\033[0m")
                     break
             t_elapsed = time.perf_counter() - t_start
-            success = is_done and task.is_successful(env) == 1.0
+            success = task.is_successful(env) == 1.0
 
             status = "✅" if success else "❌"
             print(f"{status} {task_name} — {'success' if success else 'failed'} "
