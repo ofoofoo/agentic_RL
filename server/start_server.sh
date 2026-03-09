@@ -13,14 +13,10 @@ if [[ ! -f "$KEY_FILE" ]]; then
   exit 1
 fi
 
-# Set CUDA_HOME so FlashInfer can find nvcc for JIT compilation
-# Adjust this path to match your actual CUDA install (run 'which nvcc' to find it)
-export CUDA_HOME="/usr/local/cuda-12.2"
-export PATH="$CUDA_HOME/bin:$PATH"
 #model=Qwen/Qwen3-VL-8B-Instruct
 model=Qwen/Qwen3.5-9B
 
-# ── vLLM nightly (active) ────────────────────────────────────────────────────
+# ── vLLM --
 export VLLM_API_KEY="$(cat "$KEY_FILE")"
 vllm serve $model \
     --host "$HOST" \
@@ -31,7 +27,7 @@ vllm serve $model \
     --tensor-parallel-size 4 \
     --max_num_seqs 32
 
-# ── SGLang (commented out) ───────────────────────────────────────────────────
+# ── SGLang ───────────────────────────────────────────────────
 # SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \
 #     --model $model \
 #     --host "$HOST" \

@@ -35,6 +35,10 @@ SCREEN_W, SCREEN_H = 1080, 2400
 GRID_COLS = SCREEN_W // CELL_W   # 20
 GRID_ROWS = SCREEN_H // CELL_H   # 32
 
+# swipe distance/duration by dist name
+_SWIPE_DIST_FRAC  = {"short": 0.25, "medium": 0.40, "long": 0.65}
+_SWIPE_DURATION   = {"short": 400,  "medium": 600,  "long": 800}
+
 # helper functions:
 def _draw_numbered_grid(img: Image.Image) -> Image.Image:
     draw = ImageDraw.Draw(img)
@@ -92,7 +96,7 @@ def _dump_ui_hierarchy(adb_path: str = "adb") -> list[UIElement]:
     def _do_dump(timeout: int) -> bool:
         """Returns True if dump succeeded."""
         result = subprocess.run(
-            [adb_path, "shell", "uiautomator", "dump", device_xml],
+            [adb_path, "shell", "uiautomator", "dump", "--compressed", device_xml],
             capture_output=True, timeout=timeout,
         )
         # uiautomator prints "UI hierchary dumped to: ..." on success
@@ -113,6 +117,7 @@ def _dump_ui_hierarchy(adb_path: str = "adb") -> list[UIElement]:
             _kill_uiautomator()
             try:
                 success = _do_dump(timeout=15)
+                print(f"[aw_adapter] uiautomator retry succeeded: {success}")
             except subprocess.TimeoutExpired:
                 print("[aw_adapter] uiautomator retry also timed out — falling back to grid")
                 return []
@@ -422,8 +427,27 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         # 7. execute action
         if not is_done:
             try:
-                aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)
-                self._env.execute_action(aw_action)
+                if parsed_action["action"] == "swipe":
+                    # Issue the ADB swipe directly so we control distance & speed, as aw swipe is too fast
+                    elem = self._elem_list[parsed_action["element"] - 1]
+                    x, y = elem.center
+                    dist_name = parsed_action.get("dist", "medium")
+                    direction = parsed_action["direction"]
+                    dist_px  = int(SCREEN_H * _SWIPE_DIST_FRAC.get(dist_name, 0.40))
+                    duration = _SWIPE_DURATION.get(dist_name, 600)
+                    dx = {"left": -dist_px, "right": dist_px, "up": 0,        "down": 0}.get(direction, 0)
+                    dy = {"left": 0,        "right": 0,        "up": -dist_px, "down": dist_px}.get(direction, 0)
+                    x2 = max(0, min(SCREEN_W - 1, x + dx))
+                    y2 = max(0, min(SCREEN_H - 1, y + dy))
+                    print(f"[aw_adapter] direct ADB swipe ({x},{y})\u2192({x2},{y2}) {direction} {dist_name} {dist_px}px {duration}ms")
+                    subprocess.run(
+                        [self._adb_path, "shell", "input", "swipe",
+                         str(x), str(y), str(x2), str(y2), str(duration)],
+                        timeout=10,
+                    )
+                else:
+                    aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)
+                    self._env.execute_action(aw_action)
             except Exception as e:
                 print(f"[step {self._step_count}] ERROR executing: {e}")
                 return base_agent.AgentInteractionResult(done=True, data={"error": str(e)})

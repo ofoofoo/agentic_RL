@@ -134,7 +134,7 @@ class AndroidController:
         Returns the local path on success.
         """
         device_xml = "/sdcard/ui_dump.xml"
-        self.device.shell(f"uiautomator dump {device_xml}")
+        self.device.shell(f"uiautomator dump --compressed {device_xml}")
         os.makedirs(os.path.dirname(xml_save_path) or ".", exist_ok=True)
         # pull via shell cat (ppadb doesn't have pull)
         xml_bytes = self.device.shell(f"cat {device_xml}")

@@ -42,6 +42,10 @@ def main():
         "--output_dir", type=str, default="./output/aw_runs",
         help="Directory for screenshots and results.",
     )
+    parser.add_argument(
+        "--manual", type=bool, default=False,
+        help="Manual mode: set to True to manually control the emulator for debugging a task."
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -101,6 +105,16 @@ def main():
             task_dir = os.path.join(session_dir, f"{task_name}_combo{combo_idx}")
             os.makedirs(task_dir, exist_ok=True)
 
+            if args.manual: # skip everything with the agent, just let the user control the emulator
+                print(f"Manual mode enabled. Complete the task manually.")
+                print(f"Will be checking if the task is complete every second.")
+                while True:
+                    if task.is_successful(env) == 1.0:
+                        print("\033[32menv confirms task complete!\033[0m")
+                        break
+                    time.sleep(1.0)
+                continue
+
             adapter = AWAgentAdapter(env=env, config=config, output_dir=task_dir, transition_pause=2.0)
             adapter.set_max_steps(max_steps)
             adapter.reset_episode()
@@ -108,6 +122,7 @@ def main():
             # run agent loop
             t_start = time.perf_counter()
             step_records: list[dict] = []
+            success = False
             for step_idx in range(max_steps):
                 response = adapter.step(goal) # main loop driver
                 if response.data and "latency" in response.data:
@@ -116,10 +131,12 @@ def main():
                     break
                 time.sleep(1.0) # give DB writes / UI transitions time to commit
                 if task.is_successful(env) == 1.0:
+                    success = True
                     print("\033[32menv confirms task complete!\033[0m")
                     break
             t_elapsed = time.perf_counter() - t_start
-            success = task.is_successful(env) == 1.0
+            if not success:  # only re-check if not already confirmed inside the loop
+                success = task.is_successful(env) == 1.0
 
             status = "✅" if success else "❌"
             print(f"{status} {task_name} — {'success' if success else 'failed'} "

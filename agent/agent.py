@@ -289,16 +289,19 @@ class Agent:
                 raise ValueError(f"Element {idx} out of range")
             direction = parsed_action["direction"]
             dist_name = parsed_action.get("dist", "medium")
-            unit = self.screen_w // 10
-            dist_mult = {"short": 1, "medium": 2, "long": 3}.get(dist_name, 2)
-            dist_px = unit * dist_mult
+            # Use screen_h as the base so distances are meaningful regardless
+            # of orientation. short=25%, medium=40%, long=65% of screen height.
+            # A "long" up-swipe of ~65% is enough to reliably open the app drawer.
+            dist_frac = {"short": 0.25, "medium": 0.40, "long": 0.65}.get(dist_name, 0.40)
+            dist_px = int(self.screen_h * dist_frac)
             dx_map = {"left": -dist_px, "right": dist_px, "up": 0, "down": 0}
             dy_map = {"left": 0, "right": 0, "up": -dist_px, "down": dist_px}
+            print(f"[agent] swipe element {idx} ({cx},{cy}) → {direction} {dist_name} ({dist_px}px)")
             self.controller.swipe(
                 cx, cy,
                 cx + dx_map.get(direction, 0),
                 cy + dy_map.get(direction, 0),
-                400,
+                600,  # 600 ms: deliberate enough for app-drawer & scroll triggers
             )
 
         elif name == "swipe_grid":
