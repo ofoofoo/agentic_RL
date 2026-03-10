@@ -212,6 +212,12 @@ def _action_to_aw(
             x=x, y=y,
             direction=parsed_action["direction"],
         )
+    
+    if name == "open":
+        return json_action.JSONAction(
+            action_type=json_action.OPEN_APP,
+            app_name=parsed_action["app"],
+        )
 
     # ── Grid-mode actions ────────────────────────────────────────────
     if name == "tap_grid":
@@ -455,6 +461,20 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     subprocess.run(
                         [self._adb_path, "shell", "input", "keyevent", "KEYCODE_DEL"],
                         timeout=5,
+                    )
+                elif parsed_action["action"] == "scroll":
+                    direction = parsed_action["direction"]
+                    cx = SCREEN_W // 2         # 540
+                    cy = SCREEN_H // 2         # 1200
+                    dist_px = int(SCREEN_H * 0.50)  # 50% of screen = 1200px — long visible scroll
+                    duration = 600
+                    dy = -dist_px if direction == "up" else dist_px
+                    y2 = max(0, min(SCREEN_H - 1, cy + dy))
+                    print(f"[aw_adapter] scroll {direction}: ADB swipe ({cx},{cy})\u2192({cx},{y2}) {dist_px}px {duration}ms")
+                    subprocess.run(
+                        [self._adb_path, "shell", "input", "swipe",
+                         str(cx), str(cy), str(cx), str(y2), str(duration)],
+                        timeout=10,
                     )
                 else:
                     aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)

@@ -102,6 +102,7 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
     TEXT_ALIASES  = {"text", "type", "input", "enter", "input_text"}
     LP_ALIASES    = {"long_press", "longpress", "long_tap"}
     CLEAR_ALIASES = {"clear_text", "clear", "delete_text", "erase_text"}
+    OPEN_ALIASES  = {"open", "launch", "open_app", "launch_app"}
 
     try:
         # ── tap / click ───────────────────────────────────────────────
@@ -151,6 +152,16 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
                 }
             else:
                 return None
+
+        elif act_name in OPEN_ALIASES:
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            app_name = inner.strip().strip('"').strip("'")
+            return {"action": "open", "app": app_name}
+
+        elif act_name == "scroll":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            direction = inner.strip().strip('"').strip("'").lower()
+            return {"action": "scroll", "direction": direction}
 
         elif act_name == "grid":
             return {"action": "grid"}

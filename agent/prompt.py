@@ -25,6 +25,13 @@ The action must follow the exact format of the function calls, as this is crucia
 
 Available actions (use exactly one per step):
 
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
   tap(element)
     Tap the UI element labeled with the given number.
     Example: tap(5)
@@ -41,6 +48,12 @@ Available actions (use exactly one per step):
   long_press(element)
     Long press the UI element labeled with the given number.
     Example: long_press(5)
+  
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
 
   swipe(element, direction, dist)
     Swipe starting from a labeled element number (just the integer, not a variable name).
@@ -62,9 +75,10 @@ Available actions (use exactly one per step):
   FINISH
     Output this when the task has been successfully completed.
 
-CRITICAL: The Action line must use ONLY the function names listed above, with plain integer
-arguments (e.g. tap(6), swipe(3, "up", "medium")). Do NOT use variable names, natural language,
-or any other format. The system will fail to execute any action that doesn't match exactly.
+CRITICAL RULES:
+- If the app you need is not visible on screen, use open("App Name") immediately — do NOT swipe.
+- The Action line must use ONLY the function names listed above, with plain integer arguments
+  (e.g. tap(6), swipe(3, "up", "medium")). Do NOT use variable names or natural language.
 
 The screen dimensions are {screen_width}x{screen_height}.
 """
