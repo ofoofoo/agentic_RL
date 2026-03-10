@@ -101,6 +101,7 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
     TAP_ALIASES   = {"tap", "click", "press", "tap_element"}
     TEXT_ALIASES  = {"text", "type", "input", "enter", "input_text"}
     LP_ALIASES    = {"long_press", "longpress", "long_tap"}
+    CLEAR_ALIASES = {"clear_text", "clear", "delete_text", "erase_text"}
 
     try:
         # ── tap / click ───────────────────────────────────────────────
@@ -126,6 +127,10 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
             inner = re.findall(r'\((.*)\)', act_str)[0]
             text_val = inner.strip().strip('"').strip("'")
             return {"action": "text", "text": text_val}
+
+        # ── clear_text ────────────────────────────────────────────────
+        elif act_name in CLEAR_ALIASES:
+            return {"action": "clear_text"}
 
         # ── swipe ─────────────────────────────────────────────────────
         elif act_name in SWIPE_ALIASES:
@@ -311,6 +316,11 @@ class Agent:
 
         elif name == "text":
             self.controller.type_text(parsed_action["text"])
+
+        elif name == "clear_text":
+            print("[agent] clear_text: select-all + delete")
+            self.controller.clear_text()
+
         elif name == "back":
             self.controller.back()
         elif name == "home":

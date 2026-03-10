@@ -33,6 +33,11 @@ Available actions (use exactly one per step):
     Type text into the currently focused input field. Use when a keyboard is visible.
     Example: text("Hello, world!")
 
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Use this before typing new text if the field already has content you want to replace.
+    Example: clear_text()
+
   long_press(element)
     Long press the UI element labeled with the given number.
     Example: long_press(5)
@@ -95,6 +100,10 @@ Available actions:
   text(text_input)
     Type text into the currently focused input field.
     Example: text("Hello")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
 
   back()
     Press the Android back button.
