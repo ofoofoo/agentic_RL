@@ -128,21 +128,22 @@ def main():
             # run agent loop
             t_start = time.perf_counter()
             step_records: list[dict] = []
-            success = False
+            agent_done = False
             for step_idx in range(max_steps):
                 response = adapter.step(goal) # main loop driver
                 if response.data and "latency" in response.data:
                     step_records.append(response.data)
                 if response.done: # model said FINISH — stop immediately
-                    break
-                time.sleep(1.0) # give DB writes / UI transitions time to commit
-                if task.is_successful(env) == 1.0:
-                    success = True
-                    print("\033[32menv confirms task complete!\033[0m")
+                    agent_done = True
+                    print("model said FINISH")
                     break
             t_elapsed = time.perf_counter() - t_start
-            if not success:  # only re-check if not already confirmed inside the loop
-                success = task.is_successful(env) == 1.0
+            # success = env confirms AND agent explicitly terminated
+            task_successful = task.is_successful(env) == 1.0
+            if task_successful:
+                print("\033[32menv confirms task complete!\033[0m")
+            success = task_successful if agent_done else False
+            print(f"agent_done: {agent_done}, task_successful: {task_successful}, success: {success}")
 
             status = "✅" if success else "❌"
             print(f"{status} {task_name} — {'success' if success else 'failed'} "
@@ -179,6 +180,20 @@ def main():
                     "step_total_s":  round(sum(r["latency"]["step_total_s"]  for r in step_records) / len(step_records), 3),
                 } if step_records else {},
             })
+
+            # ── Running accuracy table ────────────────────────────────
+            n_done = len(results)
+            n_success_so_far = sum(1 for r in results if r["success"])
+            acc_so_far = n_success_so_far / n_done * 100
+            print(f"\n{'─' * 60}")
+            print(f"  RUNNING ACCURACY: {n_success_so_far}/{n_done} = {acc_so_far:.1f}%  "
+                  f"({len(task_names) - n_done} tasks remaining)")
+            print(f"  {'Task':<40}  {'Status':>6}  {'Steps':>5}  {'Time':>6}")
+            print(f"  {'─'*40}  {'─'*6}  {'─'*5}  {'─'*6}")
+            for r in results:
+                icon = "✅" if r["success"] else "❌"
+                print(f"  {r['task']:<40}  {icon:>6}  {r['steps']:>5}  {r['time_s']:>5.1f}s")
+            print(f"{'─' * 60}\n")
 
             try:
                 task.tear_down(env)

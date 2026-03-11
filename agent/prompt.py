@@ -76,7 +76,7 @@ Available actions (use exactly one per step):
     Output this when the task has been successfully completed.
 
 CRITICAL RULES:
-- If the app you need is not visible on screen, use open("App Name") immediately — do NOT swipe.
+- If the app you need is not visible on screen, use open("App Name"). Do not do this for the downloads or file manager.
 - The Action line must use ONLY the function names listed above, with plain integer arguments
   (e.g. tap(6), swipe(3, "up", "medium")). Do NOT use variable names or natural language.
 

@@ -452,7 +452,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                         timeout=10,
                     )
                 elif parsed_action["action"] == "clear_text":
-                    # AndroidWorld has no native clear action — select-all + delete via ADB
                     print("[aw_adapter] clear_text: KEYCODE_CTRL_A + KEYCODE_DEL")
                     subprocess.run(
                         [self._adb_path, "shell", "input", "keyevent", "KEYCODE_CTRL_A"],
