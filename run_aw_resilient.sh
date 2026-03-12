@@ -155,14 +155,23 @@ for TASK in "${TASK_LIST[@]}"; do
         STATUS="success"
         SUCCESS_COUNT=$(( SUCCESS_COUNT + 1 ))
         echo "  → ✅ SUCCESS"
+        echo " SUCCESS COUNT: $SUCCESS_COUNT"
+        echo " TOTAL NUMBER OF TASKS: $IDX"
+        echo " SUCCESS RATE: $(( SUCCESS_COUNT / IDX * 100 ))%"
     elif [[ $EXIT_CODE -ne 0 ]]; then
         STATUS="crash"
         SKIP_COUNT=$(( SKIP_COUNT + 1 ))
         echo "  → 💥 CRASHED (exit $EXIT_CODE) — continuing to next task"
+        echo " CRASH COUNT: $SKIP_COUNT"
+        echo " TOTAL NUMBER OF TASKS: $IDX"
+        echo " SUCCESS RATE: $(( SUCCESS_COUNT / IDX * 100 ))%"
     else
         STATUS="fail"
         FAIL_COUNT=$(( FAIL_COUNT + 1 ))
         echo "  → ❌ FAILED"
+        echo " FAIL COUNT: $FAIL_COUNT"
+        echo " TOTAL NUMBER OF TASKS: $IDX"
+        echo " SUCCESS RATE: $(( SUCCESS_COUNT / IDX * 100 ))%"
     fi
 
     RESULTS+=("{\"task\":\"$TASK\",\"status\":\"$STATUS\"}")

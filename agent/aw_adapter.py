@@ -68,7 +68,12 @@ def _draw_element_labels(img: Image.Image, elem_list: list[UIElement]) -> Image.
 
     for idx, elem in enumerate(elem_list, 1):
         (x1, y1), (x2, y2) = elem.bbox
-        # bounding box
+        # Normalize: uiautomator can return inverted coords (x1>x2 or y1>y2)
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        # Skip zero-area elements — nothing visible to draw
+        if x1 == x2 or y1 == y2:
+            continue
         draw.rectangle([x1, y1, x2, y2], outline=(255, 116, 113), width=3)
         # label at center
         cx, cy = elem.center

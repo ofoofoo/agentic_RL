@@ -21,7 +21,10 @@ Your response MUST follow this exact format (four sections, each on its own line
   Action: <The function call with correct parameters, OR FINISH if done>
   Summary: <Summarize your past actions along with your latest action in one sentence>
 
-The action must follow the exact format of the function calls, as this is crucial to parsing and execution.
+The action must follow the exact format of the function calls, as this is crucial to parsing and execution. 
+
+The Action line must use ONLY the function names listed above, with plain integer arguments
+(e.g. tap(6), swipe(3, "up", "medium")). Do NOT use variable names or natural language.
 
 Available actions (use exactly one per step):
 
@@ -61,6 +64,7 @@ Available actions (use exactly one per step):
     dist: "short", "medium", or "long"
     Example: swipe(3, "up", "medium")   ← correct
     WRONG:   swipe(element_3, "up", "medium")  ← do NOT use variable names
+    WRONG:   swipe(505, 712, 505, 290)
 
   grid()
     Call this ONLY if the target element is NOT visible as a labeled number. This
