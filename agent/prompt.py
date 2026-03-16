@@ -70,6 +70,18 @@ Available actions (use exactly one per step):
     Call this ONLY if the target element is NOT visible as a labeled number. This
     switches to grid overlay mode where you can target any screen area.
 
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
   back()
     Press the Android back button.
 
@@ -122,6 +134,18 @@ Available actions:
   clear_text()
     Clear all text in the currently focused input field (select-all then delete).
     Example: clear_text()
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
 
   back()
     Press the Android back button.

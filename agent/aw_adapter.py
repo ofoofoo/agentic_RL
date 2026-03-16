@@ -86,81 +86,100 @@ def _draw_element_labels(img: Image.Image, elem_list: list[UIElement]) -> Image.
         draw.text((lx + 4, ly + 2), label, fill=(255, 116, 113), font=font)
     return img
 
-
-# ── Helper: dump UI hierarchy via ADB ───────────────────────────────
-def _dump_ui_hierarchy(adb_path: str = "adb") -> list[UIElement]:
-    """
-    Run `uiautomator dump` via subprocess and parse the result.
-    Works inside AndroidWorld where we don't have a ppadb device handle.
-    On timeout (common mid-animation or with WebViews), kills the stuck
-    uiautomator process and retries once before falling back to grid mode.
-    """
-    device_xml = "/sdcard/ui_dump.xml"
-    tmp_path = None
-
-    def _do_dump(timeout: int) -> bool:
-        """Returns True if dump succeeded."""
-        result = subprocess.run(
-            [adb_path, "shell", "uiautomator", "dump", "--compressed", device_xml],
-            capture_output=True, timeout=timeout,
-        )
-        # uiautomator prints "UI hierchary dumped to: ..." on success
-        return b"dumped" in result.stdout or result.returncode == 0
-
-    def _kill_uiautomator():
-        """Kill any stuck uiautomator process on the device."""
-        subprocess.run(
-            [adb_path, "shell", "pkill", "-f", "uiautomator"],
-            capture_output=True, timeout=5,
-        )
-
+def _annotate_thinking(img: Image.Image, thinking: str) -> Image.Image:
+    import textwrap
     try:
-        try:
-            success = _do_dump(timeout=10)
-        except subprocess.TimeoutExpired:
-            print("[aw_adapter] uiautomator timed out — killing and retrying...")
-            _kill_uiautomator()
-            try:
-                success = _do_dump(timeout=15)
-                print(f"[aw_adapter] uiautomator retry succeeded: {success}")
-            except subprocess.TimeoutExpired:
-                print("[aw_adapter] uiautomator retry also timed out — falling back to grid")
-                return []
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=24)
+    except OSError:
+        font = ImageFont.load_default()
+    
+    sidebar_width = 800
+    new_height = max(img.height, 1200)
+    new_img = Image.new("RGB", (img.width + sidebar_width, new_height), "white")
+    new_img.paste(img, (0, 0))
+    
+    draw = ImageDraw.Draw(new_img)
+    wrapped_text = textwrap.fill(thinking, width=65)
+    draw.multiline_text((img.width + 20, 20), wrapped_text, fill=(0, 0, 0), font=font, spacing=8)
+    
+    return new_img
 
-        # pull the XML
-        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
-            tmp_path = tmp.name
-        subprocess.run(
-            [adb_path, "pull", device_xml, tmp_path],
-            capture_output=True, timeout=10,
+
+def _process_aw_ui_elements(aw_elements: list) -> list[UIElement]:
+    """
+    Convert AndroidWorld's State.ui_elements into our UIElement format,
+    applying deduplication based on MIN_DIST.
+    """
+    import hashlib
+    
+    clickable = []
+    other = []
+    
+    for e in aw_elements:
+        if not e.bbox_pixels: continue
+        x1, x2 = int(e.bbox_pixels.x_min), int(e.bbox_pixels.x_max)
+        y1, y2 = int(e.bbox_pixels.y_min), int(e.bbox_pixels.y_max)
+        
+        # Normalize just in case
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        
+        # skip zero area
+        if x1 == x2 or y1 == y2:
+            continue
+            
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        
+        # Synthetic stable UID
+        uid_str = f"{e.resource_name}_{e.class_name}_{x1}_{y1}_{x2}_{y2}"
+        uid = hashlib.md5(uid_str.encode()).hexdigest()[:8]
+        
+        if e.is_clickable:
+            attrib = "clickable"
+        elif e.is_focusable:
+            attrib = "focusable"
+        elif e.is_scrollable:
+            attrib = "scrollable"
+        else:
+            attrib = "visible"
+            
+        ui_elem = UIElement(
+            uid=uid,
+            bbox=((x1, y1), (x2, y2)),
+            center=(cx, cy),
+            attrib=attrib,
+            text=e.text or "",
+            content_desc=e.content_description or ""
         )
-        # parse
-        clickable = _traverse_tree(tmp_path, "clickable", add_index=True)
-        focusable = _traverse_tree(tmp_path, "focusable", add_index=True)
-
-        merged = list(clickable)
-        for fe in focusable:
-            close = False
-            for ce in clickable:
-                dist = (
-                    (fe.center[0] - ce.center[0]) ** 2
-                    + (fe.center[1] - ce.center[1]) ** 2
-                ) ** 0.5
-                if dist <= MIN_DIST:
-                    close = True
-                    break
-            if not close:
-                merged.append(fe)
-        return merged
-    except Exception as e:
-        print(f"\033[33m[aw_adapter] WARNING: uiautomator dump failed: {e}\033[0m")
-        return []
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+        
+        if e.is_clickable:
+            clickable.append(ui_elem)
+        else:
+            other.append(ui_elem)
+            
+    # deduplicate: clickable first
+    merged = []
+    for ce in clickable:
+        close = False
+        for me in merged:
+            dist = ((ce.center[0] - me.center[0]) ** 2 + (ce.center[1] - me.center[1]) ** 2) ** 0.5
+            if dist <= MIN_DIST:
+                close = True
+                break
+        if not close:
+            merged.append(ce)
+            
+    for oe in other:
+        close = False
+        for me in merged:
+            dist = ((oe.center[0] - me.center[0]) ** 2 + (oe.center[1] - me.center[1]) ** 2) ** 0.5
+            if dist <= MIN_DIST:
+                close = True
+                break
+        if not close:
+            merged.append(oe)
+            
+    return merged
 
 
 def _area_to_xy(area: int, subarea: str) -> tuple[int, int]:
@@ -254,6 +273,12 @@ def _action_to_aw(
             text=parsed_action["text"],
         )
 
+    if name == "answer":
+        return json_action.JSONAction(
+            action_type=getattr(json_action, "ANSWER", "answer"),
+            text=parsed_action["text"],
+        )
+
     if name == "back":
         return json_action.JSONAction(action_type=json_action.NAVIGATE_BACK)
 
@@ -314,6 +339,42 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self._step_count = 0
         self._grid_on = False
         self._elem_list = []
+    
+    def initialize_chrome(self):
+        print("Running additional chrome initialization...")
+        # handle chrome initialization problem for browser tasks
+        adb_utils.launch_app("chrome", self.env.controller)
+        time.sleep(5)
+
+        tool_controller = tools.AndroidToolController(env=self.env.controller)
+        time.sleep(2)
+
+        first_op = False
+        try:
+            print("try first variant...")
+            tool_controller.click_element("Use without an account")
+            time.sleep(5.0)
+            first_op = True
+        except:
+            print("Failed to click 'Use without an account' button.")
+            pass
+        
+        if not first_op:
+            print("try second variant...")
+            try:
+                tool_controller.click_element("Accept & continue")
+            except:
+                pass
+            time.sleep(3.0)
+            try:
+                tool_controller.click_element("No thanks")
+            except:
+                pass
+            time.sleep(5.0)
+        
+        adb_utils.press_home_button(self.env.controller)
+        time.sleep(2.0)
+        print("Done additional chrome initialization")
 
     def _build_prompt(self, goal: str) -> str:
         sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
@@ -340,6 +401,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         )
 
     def step(self, goal: str) -> base_agent.AgentInteractionResult:
+        if self._step_count == 0 and "chrome" in goal.lower():
+            self.initialize_chrome()
+
         self._step_count += 1
         t_step_start = time.perf_counter()
 
@@ -352,18 +416,19 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         # 2. observation: element mode or grid mode
         t0 = time.perf_counter()
+        image_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}.png")
         if self._grid_on: # this is grid mode
             grid_img = _draw_numbered_grid(img.copy())
-            image_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}_grid.png")
-            grid_img.save(image_path)
+            grid_img.save(image_path) # Temporarily save for the model to read
+            mode_img = grid_img
             self._elem_list = []
             mode_str = f"grid ({GRID_ROWS}x{GRID_COLS})"
         else: # this is element mode
-            # dump UI hierarchy
-            self._elem_list = _dump_ui_hierarchy(self._adb_path)
+            # process UI from synced state
+            self._elem_list = _process_aw_ui_elements(state.ui_elements)
             labeled_img = _draw_element_labels(img.copy(), self._elem_list)
-            image_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}_labeled.png")
-            labeled_img.save(image_path)
+            labeled_img.save(image_path)  # Temporarily save for the model to read
+            mode_img = labeled_img
             mode_str = f"element ({len(self._elem_list)} elements)"
         t_preprocess = time.perf_counter() - t0
 
@@ -377,6 +442,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         raw_response = self.model.generate(prompt, image_path=image_path)
         t_inference = time.perf_counter() - t0
         t_step_total = time.perf_counter() - t_step_start
+
+        img_annotated = _annotate_thinking(mode_img, raw_response)
+        img_annotated.save(image_path)
 
         print(
             f"\033[36m ====================[step {self._step_count}]mode={mode_str}====================\033[0m"
@@ -457,15 +525,25 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                         timeout=10,
                     )
                 elif parsed_action["action"] == "clear_text":
-                    print("[aw_adapter] clear_text: KEYCODE_CTRL_A + KEYCODE_DEL")
+                    print("[aw_adapter] clear_text: keycombination 113 29 + keyevent 67")
                     subprocess.run(
-                        [self._adb_path, "shell", "input", "keyevent", "KEYCODE_CTRL_A"],
+                        [self._adb_path, "shell", "input", "keycombination", "113 29"],
                         timeout=5,
                     )
                     subprocess.run(
-                        [self._adb_path, "shell", "input", "keyevent", "KEYCODE_DEL"],
+                        [self._adb_path, "shell", "input", "keyevent", "67"],
                         timeout=5,
                     )
+                elif parsed_action["action"] == "enter":
+                    print("[aw_adapter] enter: KEYCODE_ENTER")
+                    subprocess.run(
+                        [self._adb_path, "shell", "input", "keyevent", "KEYCODE_ENTER"],
+                        timeout=5,
+                    )
+                elif parsed_action["action"] == "wait":
+                    sec = parsed_action.get("time", 2)
+                    print(f"[aw_adapter] wait: {sec}s")
+                    time.sleep(sec)
                 elif parsed_action["action"] == "scroll":
                     direction = parsed_action["direction"]
                     cx = SCREEN_W // 2         # 540

@@ -93,7 +93,6 @@ def main():
 
     for task_name in task_names:
         task_type = aw_registry[task_name]
-
         for combo_idx in range(args.n_task_combinations):
             params = task_type.generate_random_params()
             task = task_type(params)
@@ -102,7 +101,7 @@ def main():
             task.initialize_task(env) # initialize task
 
             goal = str(task.goal)
-            max_steps = int(task.complexity * 20)
+            max_steps = int(task.complexity * 15)
 
             print(f"[{task_name}] (combo {combo_idx + 1}/{args.n_task_combinations})")
             print(f"Goal: {goal}")
@@ -121,7 +120,7 @@ def main():
                     time.sleep(1.0)
                 continue
 
-            adapter = AWAgentAdapter(env=env, config=config, output_dir=task_dir, transition_pause=2.0)
+            adapter = AWAgentAdapter(env=env, config=config, output_dir=task_dir, transition_pause=1.0)
             adapter.set_max_steps(max_steps)
             adapter.reset_episode()
 

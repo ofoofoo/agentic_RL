@@ -288,8 +288,12 @@ class AndroidController:
 
     def clear_text(self) -> None:
         """Select all text in the focused field and delete it."""
-        self.device.input_keyevent("KEYCODE_CTRL_A")
-        self.device.input_keyevent("KEYCODE_DEL")
+        self.device.input_keycombination("113 29")
+        self.device.input_keyevent("67")
+
+    def enter(self) -> None:
+        """Press the enter key."""
+        self.device.input_keyevent("KEYCODE_ENTER")
 
     def back(self) -> None:
         self.device.input_keyevent("KEYCODE_BACK")

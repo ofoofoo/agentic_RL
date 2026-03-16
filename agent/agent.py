@@ -163,6 +163,19 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
             direction = inner.strip().strip('"').strip("'").lower()
             return {"action": "scroll", "direction": direction}
 
+        elif act_name == "answer":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            text_val = inner.strip().strip('"').strip("'")
+            return {"action": "answer", "text": text_val}
+
+        elif act_name == "wait":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            sec = int(inner.strip()) if inner.strip() else 2
+            return {"action": "wait", "time": sec}
+
+        elif act_name == "enter":
+            return {"action": "enter"}
+
         elif act_name == "grid":
             return {"action": "grid"}
 
@@ -331,6 +344,18 @@ class Agent:
         elif name == "clear_text":
             print("[agent] clear_text: select-all + delete")
             self.controller.clear_text()
+
+        elif name == "answer":
+            print(f"[agent] answer: {parsed_action['text']}")
+
+        elif name == "wait":
+            sec = parsed_action.get("time", 2)
+            print(f"[agent] waiting {sec}s")
+            time.sleep(sec)
+
+        elif name == "enter":
+            print("[agent] enter")
+            self.controller.enter()
 
         elif name == "back":
             self.controller.back()
