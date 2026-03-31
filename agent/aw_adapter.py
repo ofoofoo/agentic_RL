@@ -18,7 +18,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 
 from android_world.agents import base_agent
-from android_world.env import json_action
+from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
 from .agent import parse_element_response, parse_grid_response
@@ -329,6 +329,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             config.get("ADB_PATH", "~/Library/Android/sdk/platform-tools/adb")
         )
 
+        self.max_history_steps = config.get("MAX_HISTORY_STEPS", 0)
+        print(f"max history steps: {self.max_history_steps}")
         self._history: list[dict] = []
         self._step_count = 0
         self._grid_on = False
@@ -379,11 +381,10 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
     def _build_prompt(self, goal: str) -> str:
         sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
 
+        # Full text history (all steps — cheap in tokens)
         history_text = ""
         if self._history:
-            lines = []
-            for i, h in enumerate(self._history):
-                lines.append(f"  Step {i + 1}: {h['summary']}")
+            lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
             history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
 
         elem_text = ""
@@ -439,7 +440,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         # 4. inference
         t0 = time.perf_counter()
-        raw_response = self.model.generate(prompt, image_path=image_path)
+        history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
+        raw_response = self.model.generate(prompt, image_path=image_path, history=history_window)
         t_inference = time.perf_counter() - t0
         t_step_total = time.perf_counter() - t_step_start
 
@@ -481,6 +483,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             self._history.append({
                 "summary": result.get("summary", "Switched to grid mode"),
                 "action": parsed_action,
+                "image_path": image_path,
             })
             # don't execute, just re-loop
             return base_agent.AgentInteractionResult(
@@ -569,6 +572,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self._history.append({
             "summary": result.get("summary", raw_response[:100]),
             "action": parsed_action,
+            "image_path": image_path,
         })
 
         return base_agent.AgentInteractionResult(

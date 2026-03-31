@@ -138,7 +138,17 @@ def main():
                     break
             t_elapsed = time.perf_counter() - t_start
             # success = env confirms AND agent explicitly terminated
-            task_successful = task.is_successful(env) == 1.0
+            task_successful = False
+            for is_success_attempt in range(3):
+                try:
+                    task_successful = task.is_successful(env) == 1.0
+                    break
+                except Exception as e:
+                    print(f"Error during is_successful check (attempt {is_success_attempt + 1}/3): {e}")
+                    import subprocess
+                    subprocess.run(["adb", "reconnect"], capture_output=True)
+                    time.sleep(3)
+                    
             if task_successful:
                 print("\033[32menv confirms task complete!\033[0m")
             success = task_successful if agent_done else False

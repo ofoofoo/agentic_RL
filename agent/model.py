@@ -1,4 +1,4 @@
-import json, base64
+import json, base64, os
 from pathlib import Path
 import google.genai as genai
 import google.genai.types as types
@@ -14,6 +14,7 @@ class GeminiModel:
         self,
         prompt: str,
         image_path: str = None,
+        history: list[dict] = None,
         examples: list[dict] = None,
     ) -> str:
         """
@@ -45,6 +46,22 @@ class GeminiModel:
 
             parts.append(types.Part.from_text(text="=== YOUR TURN ==="))
 
+        # ── History ──────────────────────────────────────────────────────
+        if history:
+            parts.append(types.Part.from_text(text="History of previous steps:"))
+            for i, h in enumerate(history):
+                step_header = f"Step {i + 1}:"
+                parts.append(types.Part.from_text(text=step_header))
+                
+                img_p = h.get("image_path")
+                if img_p and os.path.exists(img_p):
+                    img_bytes = Path(img_p).read_bytes()
+                    parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+                
+                summary = h.get("summary", "")
+                if summary:
+                    parts.append(types.Part.from_text(text=f"Action taken: {summary}"))
+
         # ── Current step ─────────────────────────────────────────────────
         parts.append(types.Part.from_text(text=prompt))
 
@@ -65,7 +82,7 @@ class VLLMModel:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model_name = model_name
 
-    def generate(self, prompt: str, image_path: str = None, examples: list[dict] = None) -> str:
+    def generate(self, prompt: str, image_path: str = None, history: list[dict] = None, examples: list[dict] = None) -> str:
         messages = []
 
         # ICL examples
@@ -80,6 +97,20 @@ class VLLMModel:
                 action_str = (f"{reasoning}\n" if reasoning else "") + json.dumps(ex["action"])
                 messages.append({"role": "assistant", "content": action_str})
             messages.append({"role": "user", "content": "=== YOUR TURN ==="})
+
+        # History
+        if history:
+            history_content = [{"type": "text", "text": "History of previous steps:"}]
+            for i, h in enumerate(history):
+                history_content.append({"type": "text", "text": f"Step {i + 1}:"})
+                img_p = h.get("image_path")
+                if img_p and os.path.exists(img_p):
+                    img_b64 = base64.b64encode(Path(img_p).read_bytes()).decode()
+                    history_content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}})
+                summary = h.get("summary", "")
+                if summary:
+                    history_content.append({"type": "text", "text": f"Action taken: {summary}"})
+            messages.append({"role": "user", "content": history_content})
 
         # Current step
         content = [{"type": "text", "text": prompt}]

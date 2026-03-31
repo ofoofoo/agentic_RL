@@ -11,7 +11,7 @@ At each step you receive:
   1. A screenshot of the current screen with interactive UI elements labeled by numbers
   2. A text list describing each labeled element (its type, text, and content description)
   3. The overall task you are trying to complete
-  4. A brief history of the actions you have already taken
+  4. A history of screenshots and actions from previous steps
 
 Your job is to decide the SINGLE best next action to make progress on the task.
 
@@ -103,7 +103,13 @@ The screen dimensions are {screen_width}x{screen_height}.
 def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int) -> str:
     """System prompt for grid-overlay mode — fallback when elements aren't labeled."""
     return f"""\
-You are an agent controlling an Android phone. The screen is overlaid with a numbered grid.
+You are an agent controlling an Android phone via a screen-reading loop. The current screen is overlaid with a numbered grid.
+
+At each step you receive:
+  1. A screenshot of the current screen with a numbered grid overlay
+  2. The overall task you are trying to complete
+  3. A history of screenshots and actions from previous steps
+
 Each grid area is labeled with an integer in the top-left corner.
 
 Your response MUST follow this exact format:
