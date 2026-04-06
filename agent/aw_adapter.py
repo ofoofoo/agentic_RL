@@ -381,7 +381,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
     def _build_prompt(self, goal: str) -> str:
         sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
 
-        # Full text history (all steps — cheap in tokens)
+        # Full text history
         history_text = ""
         if self._history:
             lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
@@ -441,19 +441,24 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         # 4. inference
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
-        raw_response = self.model.generate(prompt, image_path=image_path, history=history_window)
+        raw_response, token_usage = self.model.generate(prompt, image_path=image_path, history=history_window)
         t_inference = time.perf_counter() - t0
-        t_step_total = time.perf_counter() - t_step_start
 
         img_annotated = _annotate_thinking(mode_img, raw_response)
         img_annotated.save(image_path)
 
+        prompt_tokens = token_usage.get("prompt_tokens", 0)
+        completion_tokens = token_usage.get("completion_tokens", 0)
+        total_tokens = token_usage.get("total_tokens", 0)
+        ttft_s = token_usage.get("ttft_s", 0.0)
+        decode_s = token_usage.get("decode_s", 0.0)
+        tpot_s = token_usage.get("tpot_s", 0.0)
         print(
             f"\033[36m ====================[step {self._step_count}]mode={mode_str}====================\033[0m"
             f"screenshot={t_screenshot:.2f}s  "
             f"preprocess={t_preprocess:.2f}s  "
-            f"inference={t_inference:.2f}s  "
-            f"total={t_step_total:.2f}s"
+            f"inference={t_inference:.2f}s (ttft={ttft_s:.3f}s / decode={decode_s:.3f}s / tpot={tpot_s*1000:.1f}ms)  "
+            f"tokens(prompt={prompt_tokens} / completion={completion_tokens} / total={total_tokens})"
             f"\nTASK: {goal}"
         )
         print(raw_response)
@@ -496,7 +501,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                         "preprocess_s":  round(t_preprocess, 3),
                         "prompt_s":      round(t_prompt, 3),
                         "inference_s":   round(t_inference, 3),
+                        "action_s":      0,
                         "step_total_s":  round(t_step_total, 3),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens":  total_tokens,
+                        "ttft_s":        ttft_s,
+                        "decode_s":      decode_s,
+                        "tpot_ms":       round(tpot_s * 1000, 2),
                     },
                     "image_path": image_path,
                     "mode": "grid" if self._grid_on else "element",
@@ -507,6 +519,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             self._grid_on = False
 
         # 7. execute action
+        t0 = time.perf_counter()
         if not is_done:
             try:
                 if parsed_action["action"] == "swipe":
@@ -567,6 +580,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             except Exception as e:
                 print(f"[step {self._step_count}] ERROR executing: {e}")
                 return base_agent.AgentInteractionResult(done=True, data={"error": str(e)})
+        t_action = time.perf_counter() - t0
+        t_step_total = time.perf_counter() - t_step_start
 
         # 8. update history
         self._history.append({
@@ -585,7 +600,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     "preprocess_s":  round(t_preprocess, 3),
                     "prompt_s":      round(t_prompt, 3),
                     "inference_s":   round(t_inference, 3),
+                    "action_s":      round(t_action, 3),
                     "step_total_s":  round(t_step_total, 3),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens":  total_tokens,
+                    "ttft_s":        ttft_s,
+                    "decode_s":      decode_s,
+                    "tpot_ms":       round(tpot_s * 1000, 2),
                 },
                 "image_path": image_path,
                 "mode": "grid" if self._grid_on else "element",

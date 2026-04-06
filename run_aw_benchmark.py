@@ -159,8 +159,8 @@ def main():
                   f"({step_idx + 1} steps, {t_elapsed:.1f}s)")
 
             if step_records:
-                print(f"{'Step':>4}  {'Screenshot':>10}  {'Preprocess':>10}  {'Prompt':>7}  {'Inference':>9}  {'Total':>7}")
-                print("   " + "-" * 58)
+                print(f"{'Step':>4}  {'Screenshot':>10}  {'Preprocess':>10}  {'Prompt':>7}  {'Inference':>9}  {'Action':>7}  {'Total':>7}  {'TTFT':>7}  {'Decode':>7}  {'TPOT(ms)':>8}  {'PTok':>6}  {'CTok':>5}")
+                print("   " + "-" * 112)
                 for rec in step_records:
                     lat = rec["latency"]
                     print(f"   {rec['step']:>4}  "
@@ -168,11 +168,23 @@ def main():
                           f"{lat['preprocess_s']:>9.2f}s  "
                           f"{lat['prompt_s']:>6.2f}s  "
                           f"{lat['inference_s']:>8.2f}s  "
-                          f"{lat['step_total_s']:>6.2f}s")
+                          f"{lat.get('action_s', 0):>6.2f}s  "
+                          f"{lat['step_total_s']:>6.2f}s  "
+                          f"{lat.get('ttft_s', 0):>6.3f}s  "
+                          f"{lat.get('decode_s', 0):>6.3f}s  "
+                          f"{lat.get('tpot_ms', 0):>8.1f}  "
+                          f"{lat.get('prompt_tokens', 0):>6}  "
+                          f"{lat.get('completion_tokens', 0):>5}")
                 def avg(key): return sum(r["latency"][key] for r in step_records) / len(step_records)
-                print("   " + "-" * 58)
+                def avgo(key): return sum(r["latency"].get(key, 0) for r in step_records) / len(step_records)
+                def total_tok(key): return sum(r["latency"].get(key, 0) for r in step_records)
+                print("   " + "-" * 112)
                 print(f"   {'avg':>4}  {avg('screenshot_s'):>9.2f}s  {avg('preprocess_s'):>9.2f}s  "
-                      f"{avg('prompt_s'):>6.2f}s  {avg('inference_s'):>8.2f}s  {avg('step_total_s'):>6.2f}s")
+                      f"{avg('prompt_s'):>6.2f}s  {avg('inference_s'):>8.2f}s  {avgo('action_s'):>6.2f}s  {avg('step_total_s'):>6.2f}s  "
+                      f"{avgo('ttft_s'):>6.3f}s  {avgo('decode_s'):>6.3f}s  {avgo('tpot_ms'):>8.1f}  "
+                      f"{int(avgo('prompt_tokens')):>6}  {int(avgo('completion_tokens')):>5}")
+                print(f"   {'SUM':>4}  {'':>10}  {'':>10}  {'':>7}  {'':>9}  {'':>7}  {'':>7}  {'':>7}  {'':>7}  {'':>8}  "
+                      f"{total_tok('prompt_tokens'):>6}  {total_tok('completion_tokens'):>5}")
 
             results.append({
                 "task": task_name,
@@ -186,7 +198,16 @@ def main():
                     "preprocess_s":  round(sum(r["latency"]["preprocess_s"]  for r in step_records) / len(step_records), 3),
                     "prompt_s":      round(sum(r["latency"]["prompt_s"]      for r in step_records) / len(step_records), 3),
                     "inference_s":   round(sum(r["latency"]["inference_s"]   for r in step_records) / len(step_records), 3),
+                    "action_s":      round(sum(r["latency"].get("action_s", 0) for r in step_records) / len(step_records), 3),
                     "step_total_s":  round(sum(r["latency"]["step_total_s"]  for r in step_records) / len(step_records), 3),
+                    "ttft_s":        round(sum(r["latency"].get("ttft_s", 0)  for r in step_records) / len(step_records), 4),
+                    "decode_s":      round(sum(r["latency"].get("decode_s", 0) for r in step_records) / len(step_records), 4),
+                    "tpot_ms":       round(sum(r["latency"].get("tpot_ms", 0) for r in step_records) / len(step_records), 2),
+                } if step_records else {},
+                "token_totals": {
+                    "prompt_tokens":     sum(r["latency"].get("prompt_tokens", 0)     for r in step_records),
+                    "completion_tokens": sum(r["latency"].get("completion_tokens", 0) for r in step_records),
+                    "total_tokens":      sum(r["latency"].get("total_tokens", 0)      for r in step_records),
                 } if step_records else {},
             })
 
