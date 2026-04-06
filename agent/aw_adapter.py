@@ -1,10 +1,6 @@
 from __future__ import annotations
 """
 Wraps agent logic into AndroidWorld's EnvironmentInteractingAgent interface.
-
-Dual-mode UI interaction:
-  1. Element mode (primary) — uiautomator dump + labeled elements
-  2. Grid mode (fallback) — numbered grid overlay
 """
 
 import io
@@ -21,7 +17,7 @@ from android_world.agents import base_agent
 from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
-from .agent import parse_element_response, parse_grid_response
+from .parse import parse_element_response, parse_grid_response
 from .model import GeminiModel, VLLMModel
 from .prompt import (
     build_element_prompt,
@@ -159,25 +155,9 @@ def _process_aw_ui_elements(aw_elements: list) -> list[UIElement]:
             
     # deduplicate: clickable first
     merged = []
-    for ce in clickable:
-        close = False
-        for me in merged:
-            dist = ((ce.center[0] - me.center[0]) ** 2 + (ce.center[1] - me.center[1]) ** 2) ** 0.5
-            if dist <= MIN_DIST:
-                close = True
-                break
-        if not close:
-            merged.append(ce)
-            
-    for oe in other:
-        close = False
-        for me in merged:
-            dist = ((oe.center[0] - me.center[0]) ** 2 + (oe.center[1] - me.center[1]) ** 2) ** 0.5
-            if dist <= MIN_DIST:
-                close = True
-                break
-        if not close:
-            merged.append(oe)
+    for elem in clickable + other:
+        if not any(((elem.center[0] - m.center[0]) ** 2 + (elem.center[1] - m.center[1]) ** 2) ** 0.5 <= MIN_DIST for m in merged):
+            merged.append(elem)
             
     return merged
 
@@ -201,6 +181,11 @@ def _area_to_xy(area: int, subarea: str) -> tuple[int, int]:
     return x0 + dx, y0 + dy
 
 
+def _get_element_center(idx: int, elem_list: list[UIElement]) -> tuple[int, int]:
+    if elem_list and 1 <= idx <= len(elem_list):
+        return elem_list[idx - 1].center
+    raise ValueError(f"Element {idx} out of range (have {len(elem_list or [])})")
+
 def _action_to_aw(
     parsed_action: dict,
     elem_list: list[UIElement] | None = None,
@@ -210,27 +195,15 @@ def _action_to_aw(
 
     # ── Element-mode actions ─────────────────────────────────────────
     if name == "tap":
-        idx = parsed_action["element"]
-        if elem_list and 1 <= idx <= len(elem_list):
-            x, y = elem_list[idx - 1].center
-        else:
-            raise ValueError(f"Element {idx} out of range (have {len(elem_list or [])})")
+        x, y = _get_element_center(parsed_action["element"], elem_list)
         return json_action.JSONAction(action_type=json_action.CLICK, x=x, y=y)
 
     if name == "long_press":
-        idx = parsed_action["element"]
-        if elem_list and 1 <= idx <= len(elem_list):
-            x, y = elem_list[idx - 1].center
-        else:
-            raise ValueError(f"Element {idx} out of range")
+        x, y = _get_element_center(parsed_action["element"], elem_list)
         return json_action.JSONAction(action_type=json_action.LONG_PRESS, x=x, y=y)
 
     if name == "swipe":
-        idx = parsed_action["element"]
-        if elem_list and 1 <= idx <= len(elem_list):
-            x, y = elem_list[idx - 1].center
-        else:
-            raise ValueError(f"Element {idx} out of range")
+        x, y = _get_element_center(parsed_action["element"], elem_list)
         return json_action.JSONAction(
             action_type=json_action.SWIPE,
             x=x, y=y,
@@ -295,7 +268,7 @@ def _action_to_aw(
 
 
 class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
-    """Wraps Gemini/vLLM agent to run inside AndroidWorld's harness."""
+    """Wraps agent to run inside AndroidWorld's harness."""
 
     def __init__(
         self,
@@ -335,6 +308,28 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self._step_count = 0
         self._grid_on = False
         self._elem_list: list[UIElement] = []
+
+    def _adb_shell(self, *args, timeout: int = 5):
+        return subprocess.run([self._adb_path, "shell"] + list(args), timeout=timeout)
+
+    def _build_latency_dict(
+        self, t_screenshot: float, t_preprocess: float, t_prompt: float,
+        t_inference: float, t_action: float, t_step_total: float, token_usage: dict
+    ) -> dict:
+        return {
+            "screenshot_s":  round(t_screenshot, 3),
+            "preprocess_s":  round(t_preprocess, 3),
+            "prompt_s":      round(t_prompt, 3),
+            "inference_s":   round(t_inference, 3),
+            "action_s":      round(t_action, 3),
+            "step_total_s":  round(t_step_total, 3),
+            "prompt_tokens": token_usage.get("prompt_tokens", 0),
+            "completion_tokens": token_usage.get("completion_tokens", 0),
+            "total_tokens":  token_usage.get("total_tokens", 0),
+            "ttft_s":        token_usage.get("ttft_s", 0.0),
+            "decode_s":      token_usage.get("decode_s", 0.0),
+            "tpot_ms":       round(token_usage.get("tpot_s", 0.0) * 1000, 2),
+        }
 
     def reset_episode(self) -> None:
         self._history = []
@@ -491,25 +486,15 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 "image_path": image_path,
             })
             # don't execute, just re-loop
+            t_step_total = time.perf_counter() - t_step_start
             return base_agent.AgentInteractionResult(
                 done=False,
                 data={
                     "step": self._step_count,
                     "action": parsed_action,
-                    "latency": {
-                        "screenshot_s":  round(t_screenshot, 3),
-                        "preprocess_s":  round(t_preprocess, 3),
-                        "prompt_s":      round(t_prompt, 3),
-                        "inference_s":   round(t_inference, 3),
-                        "action_s":      0,
-                        "step_total_s":  round(t_step_total, 3),
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens":  total_tokens,
-                        "ttft_s":        ttft_s,
-                        "decode_s":      decode_s,
-                        "tpot_ms":       round(tpot_s * 1000, 2),
-                    },
+                    "latency": self._build_latency_dict(
+                        t_screenshot, t_preprocess, t_prompt, t_inference, 0.0, t_step_total, token_usage
+                    ),
                     "image_path": image_path,
                     "mode": "grid" if self._grid_on else "element",
                 },
@@ -523,7 +508,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         if not is_done:
             try:
                 if parsed_action["action"] == "swipe":
-                    # Issue the ADB swipe directly so we control distance & speed, as aw swipe is too fast
                     elem = self._elem_list[parsed_action["element"] - 1]
                     x, y = elem.center
                     dist_name = parsed_action.get("dist", "medium")
@@ -535,27 +519,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     x2 = max(0, min(SCREEN_W - 1, x + dx))
                     y2 = max(0, min(SCREEN_H - 1, y + dy))
                     print(f"[aw_adapter] direct ADB swipe ({x},{y})\u2192({x2},{y2}) {direction} {dist_name} {dist_px}px {duration}ms")
-                    subprocess.run(
-                        [self._adb_path, "shell", "input", "swipe",
-                         str(x), str(y), str(x2), str(y2), str(duration)],
-                        timeout=10,
-                    )
+                    self._adb_shell("input", "swipe", str(x), str(y), str(x2), str(y2), str(duration), timeout=10)
                 elif parsed_action["action"] == "clear_text":
                     print("[aw_adapter] clear_text: keycombination 113 29 + keyevent 67")
-                    subprocess.run(
-                        [self._adb_path, "shell", "input", "keycombination", "113 29"],
-                        timeout=5,
-                    )
-                    subprocess.run(
-                        [self._adb_path, "shell", "input", "keyevent", "67"],
-                        timeout=5,
-                    )
+                    self._adb_shell("input", "keycombination", "113 29")
+                    self._adb_shell("input", "keyevent", "67")
                 elif parsed_action["action"] == "enter":
                     print("[aw_adapter] enter: KEYCODE_ENTER")
-                    subprocess.run(
-                        [self._adb_path, "shell", "input", "keyevent", "KEYCODE_ENTER"],
-                        timeout=5,
-                    )
+                    self._adb_shell("input", "keyevent", "KEYCODE_ENTER")
                 elif parsed_action["action"] == "wait":
                     sec = parsed_action.get("time", 2)
                     print(f"[aw_adapter] wait: {sec}s")
@@ -569,11 +540,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     dy = -dist_px if direction == "up" else dist_px
                     y2 = max(0, min(SCREEN_H - 1, cy + dy))
                     print(f"[aw_adapter] scroll {direction}: ADB swipe ({cx},{cy})\u2192({cx},{y2}) {dist_px}px {duration}ms")
-                    subprocess.run(
-                        [self._adb_path, "shell", "input", "swipe",
-                         str(cx), str(cy), str(cx), str(y2), str(duration)],
-                        timeout=10,
-                    )
+                    self._adb_shell("input", "swipe", str(cx), str(cy), str(cx), str(y2), str(duration), timeout=10)
                 else:
                     aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)
                     self._env.execute_action(aw_action)
@@ -595,20 +562,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             data={
                 "step": self._step_count,
                 "action": parsed_action,
-                "latency": {
-                    "screenshot_s":  round(t_screenshot, 3),
-                    "preprocess_s":  round(t_preprocess, 3),
-                    "prompt_s":      round(t_prompt, 3),
-                    "inference_s":   round(t_inference, 3),
-                    "action_s":      round(t_action, 3),
-                    "step_total_s":  round(t_step_total, 3),
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens":  total_tokens,
-                    "ttft_s":        ttft_s,
-                    "decode_s":      decode_s,
-                    "tpot_ms":       round(tpot_s * 1000, 2),
-                },
+                "latency": self._build_latency_dict(
+                    t_screenshot, t_preprocess, t_prompt, t_inference, t_action, t_step_total, token_usage
+                ),
                 "image_path": image_path,
                 "mode": "grid" if self._grid_on else "element",
                 "n_elements": len(self._elem_list),

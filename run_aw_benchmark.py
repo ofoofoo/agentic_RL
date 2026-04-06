@@ -1,5 +1,3 @@
-# Swap out the system sqlite3 (which lacks FTS4) with our custom-built pysqlite3.
-# This MUST be the very first import before anything from android_world is loaded.
 import sys
 import pysqlite3
 sys.modules["sqlite3"] = pysqlite3

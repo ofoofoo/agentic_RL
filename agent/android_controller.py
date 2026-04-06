@@ -1,8 +1,4 @@
 from __future__ import annotations
-"""
-Android device controller via ppadb (pure-python-adb).
-"""
-
 import os
 import io
 import time
@@ -107,10 +103,6 @@ class AndroidController:
                 f"Run `adb devices` to check connected devices."
             )
 
-    # ------------------------------------------------------------------
-    # Observation helpers
-    # ------------------------------------------------------------------
-
     def screen_size(self) -> tuple[int, int]:
         """
         Return the physical screen resolution as (width, height) in pixels.
@@ -123,10 +115,6 @@ class AndroidController:
                 w, _, h = dimensions.strip().partition("x")
                 return int(w), int(h)
         raise RuntimeError(f"Could not parse screen size from: {output!r}")
-
-    # ------------------------------------------------------------------
-    # Mode 1 — UI hierarchy (primary)
-    # ------------------------------------------------------------------
 
     def get_ui_hierarchy(self, xml_save_path: str) -> str:
         """
@@ -177,12 +165,10 @@ class AndroidController:
 
         Returns (labeled_path, elem_list, t_adb_s, t_hierarchy_s, t_label_s).
         """
-        # ── ADB screenshot ──────────────────────────────────────────────
         t0 = time.perf_counter()
         png_bytes: bytes = self.device.screencap()
         t_adb = time.perf_counter() - t0
 
-        # ── UI hierarchy dump + parse ───────────────────────────────────
         t0 = time.perf_counter()
         if xml_save_path is None:
             xml_save_path = labeled_path.replace(".png", ".xml")
@@ -220,10 +206,6 @@ class AndroidController:
         t_label = time.perf_counter() - t0
 
         return labeled_path, elem_list, t_adb, t_hierarchy, t_label
-
-    # ------------------------------------------------------------------
-    # Mode 2 — numbered grid (fallback)
-    # ------------------------------------------------------------------
 
     def screenshot_with_numbered_grid(
         self,
@@ -287,12 +269,10 @@ class AndroidController:
         self.device.input_text(text)
 
     def clear_text(self) -> None:
-        """Select all text in the focused field and delete it."""
         self.device.input_keycombination("113 29")
         self.device.input_keyevent("67")
 
     def enter(self) -> None:
-        """Press the enter key."""
         self.device.input_keyevent("KEYCODE_ENTER")
 
     def back(self) -> None:
@@ -300,13 +280,3 @@ class AndroidController:
 
     def home(self) -> None:
         self.device.input_keyevent("KEYCODE_HOME")
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def list_devices(host: str = "127.0.0.1", port: int = 5037) -> list[str]:
-        """Return a list of connected device serials."""
-        client = AdbClient(host=host, port=port)
-        return [d.serial for d in client.devices()]

@@ -5,6 +5,19 @@ import google.genai.types as types
 from openai import OpenAI
 
 
+def _image_part_gemini(image_path: str) -> types.Part:
+    return types.Part.from_bytes(data=Path(image_path).read_bytes(), mime_type="image/png")
+
+def _image_content(image_path: str) -> dict:
+    img_b64 = base64.b64encode(Path(image_path).read_bytes()).decode() # encode image
+    return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
+
+def _format_action(ex: dict) -> str:
+    reasoning = ex.get("reasoning", "")
+    action_json = json.dumps(ex["action"])
+    return f"{reasoning}\n{action_json}" if reasoning else action_json
+
+
 class GeminiModel:
     def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
         self.client = genai.Client(api_key=api_key)
@@ -24,7 +37,7 @@ class GeminiModel:
         """
         parts: list[types.Part] = []
 
-        # load ICL examples
+        # ICL examples
         if examples:
             for i, ex in enumerate(examples, 1):
                 header = (
@@ -33,45 +46,28 @@ class GeminiModel:
                     f"Screenshot (with coordinate grid):"
                 )
                 parts.append(types.Part.from_text(text=header))
-
-                ex_img = Path(ex["screenshot"]).read_bytes()
-                parts.append(types.Part.from_bytes(data=ex_img, mime_type="image/png"))
-
-                reasoning = ex.get("reasoning", "")
-                action_json = json.dumps(ex["action"])
-                footer = (
-                    f"{reasoning}\n{action_json}"
-                    if reasoning
-                    else action_json
-                )
-                parts.append(types.Part.from_text(text=footer))
+                parts.append(_image_part_gemini(ex["screenshot"]))
+                parts.append(types.Part.from_text(text=_format_action(ex)))
 
             parts.append(types.Part.from_text(text="=== YOUR TURN ==="))
 
-        # ── History ──────────────────────────────────────────────────────
+        # History
         if history:
             parts.append(types.Part.from_text(text="History of previous steps:"))
             for i, h in enumerate(history):
-                step_header = f"Step {i + 1}:"
-                parts.append(types.Part.from_text(text=step_header))
-
+                parts.append(types.Part.from_text(text=f"Step {i + 1}:"))
                 img_p = h.get("image_path")
                 if img_p and os.path.exists(img_p):
-                    img_bytes = Path(img_p).read_bytes()
-                    parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+                    parts.append(_image_part_gemini(img_p))
 
                 summary = h.get("summary", "")
                 if summary:
                     parts.append(types.Part.from_text(text=f"Action taken: {summary}"))
 
-        # ── Current step ─────────────────────────────────────────────────
+        # Current step
         parts.append(types.Part.from_text(text=prompt))
-
         if image_path is not None:
-            img_bytes = Path(image_path).read_bytes()
-            parts.append(
-                types.Part.from_bytes(data=img_bytes, mime_type="image/png")
-            )
+            parts.append(_image_part_gemini(image_path))
 
         response = self.client.models.generate_content(
             model=self.model_name,
@@ -87,7 +83,6 @@ class GeminiModel:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
-                # Gemini SDK doesn't expose per-request TTFT/TPOT
                 "ttft_s": 0.0,
                 "decode_s": 0.0,
                 "tpot_s": 0.0,
@@ -108,21 +103,17 @@ class VLLMModel:
           ttft_s  (Time To First Token  = ViT encode + LLM prefill),
           decode_s (time from first token to last token),
           tpot_s  (decode_s / completion_tokens, i.e. per-output-token latency)
-        Measured via streaming so TTFT is accurate.
         """
         messages = []
 
         # ICL examples
         if examples:
             for i, ex in enumerate(examples, 1):
-                img_b64 = base64.b64encode(Path(ex["screenshot"]).read_bytes()).decode()
                 messages.append({"role": "user", "content": [
                     {"type": "text", "text": f"=== EXAMPLE {i} ===\nTask: {ex['task']}"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    _image_content(ex["screenshot"]),
                 ]})
-                reasoning = ex.get("reasoning", "")
-                action_str = (f"{reasoning}\n" if reasoning else "") + json.dumps(ex["action"])
-                messages.append({"role": "assistant", "content": action_str})
+                messages.append({"role": "assistant", "content": _format_action(ex)})
             messages.append({"role": "user", "content": "=== YOUR TURN ==="})
 
         # History
@@ -132,8 +123,7 @@ class VLLMModel:
                 history_content.append({"type": "text", "text": f"Step {i + 1}:"})
                 img_p = h.get("image_path")
                 if img_p and os.path.exists(img_p):
-                    img_b64 = base64.b64encode(Path(img_p).read_bytes()).decode()
-                    history_content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}})
+                    history_content.append(_image_content(img_p))
                 summary = h.get("summary", "")
                 if summary:
                     history_content.append({"type": "text", "text": f"Action taken: {summary}"})
@@ -142,11 +132,9 @@ class VLLMModel:
         # Current step
         content = [{"type": "text", "text": prompt}]
         if image_path:
-            img_b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
-            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}})
+            content.append(_image_content(image_path))
         messages.append({"role": "user", "content": content})
 
-        # ── Streaming call to capture TTFT ────────────────────────────────
         t_request_start = _time.perf_counter()
         stream = self.client.chat.completions.create(
             model=self.model_name,

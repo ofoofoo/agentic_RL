@@ -1,38 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
-PORT="${PORT:-8000}"
-HOST="127.0.0.1" 
+GPU=0
+PORT=8000
+MODEL="Qwen/Qwen3-VL-8B-Instruct"
 KEY_FILE="${KEY_FILE:-$HOME/.config/vllm/api.key}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gpu)   GPU="$2";   shift 2 ;;
+    --port)  PORT="$2";  shift 2 ;;
+    --model) MODEL="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
 
 if [[ ! -f "$KEY_FILE" ]]; then
   echo "API key not found at $KEY_FILE"
-  echo "You can create one with:"
-  echo "  mkdir -p $(dirname "$KEY_FILE") && python -c 'import secrets; print(secrets.token_urlsafe(48))' > \"$KEY_FILE\" && chmod 600 \"$KEY_FILE\""
   exit 1
 fi
 
-#model=Qwen/Qwen3-VL-8B-Instruct
-model=Qwen/Qwen3.5-9B
+echo "Starting vLLM: model=$MODEL  gpu=$GPU  port=$PORT"
 
-# ── vLLM --
 export VLLM_API_KEY="$(cat "$KEY_FILE")"
-vllm serve $model \
-    --host "$HOST" \
+CUDA_VISIBLE_DEVICES="$GPU" vllm serve "$MODEL" \
+    --host "127.0.0.1" \
     --port "$PORT" \
     --dtype bfloat16 \
-    --max-model-len 8192 \
+    --max-model-len 31972 \
     --enable-prefix-caching \
-    --tensor-parallel-size 4 \
     --max_num_seqs 32
-
-# ── SGLang ───────────────────────────────────────────────────
-# SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \
-#     --model $model \
-#     --host "$HOST" \
-#     --port "$PORT" \
-#     --dtype auto \
-#     --context-length 131072 \
-#     --tensor-parallel-size 4 \
-#     --api-key "$(cat "$KEY_FILE")"
