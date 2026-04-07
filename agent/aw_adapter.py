@@ -299,7 +299,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         # ADB path for uiautomator
         self._adb_path = os.path.expanduser(
-            config.get("ADB_PATH", "~/Library/Android/sdk/platform-tools/adb")
+            config.get("ADB_PATH", "~/Android/Sdk/platform-tools/adb")
         )
 
         self.max_history_steps = config.get("MAX_HISTORY_STEPS", 0)
@@ -459,8 +459,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         print(raw_response)
 
         if not raw_response:
-            print(f"  [step {self._step_count}] ERROR: model returned empty/None response")
-            return base_agent.AgentInteractionResult(done=True, data={"error": "empty_response"})
+            print(f"  [step {self._step_count}] WARNING: model returned empty/None response, retrying")
+            return base_agent.AgentInteractionResult(done=False, data={"error": "empty_response"})
 
         # 5. parse structured response
         if self._grid_on:
@@ -469,9 +469,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             result = parse_element_response(raw_response)
 
         if result is None:
-            print(f"  [step {self._step_count}] ERROR: could not parse structured response")
+            print(f"  [step {self._step_count}] WARNING: could not parse response, retrying")
             print("  Raw response was:", repr(raw_response))
-            return base_agent.AgentInteractionResult(done=True, data={"error": "parse_failed"})
+            self._history.append({"summary": "Parse error, retrying", "action": {"action": "noop"}, "image_path": image_path})
+            t_step_total = time.perf_counter() - t_step_start
+            return base_agent.AgentInteractionResult(done=False, data={
+                "step": self._step_count,
+                "latency": self._build_latency_dict(t_screenshot, t_preprocess, t_prompt, t_inference, 0.0, t_step_total, token_usage),
+            })
 
         parsed_action = result["parsed_action"]
         is_done = parsed_action["action"] == "done"
@@ -545,8 +550,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)
                     self._env.execute_action(aw_action)
             except Exception as e:
-                print(f"[step {self._step_count}] ERROR executing: {e}")
-                return base_agent.AgentInteractionResult(done=True, data={"error": str(e)})
+                print(f"[step {self._step_count}] WARNING executing (continuing): {e}")
         t_action = time.perf_counter() - t0
         t_step_total = time.perf_counter() - t_step_start
 

@@ -5,6 +5,7 @@ sys.modules["sqlite3"] = pysqlite3
 import argparse
 import json
 import os
+import subprocess
 import time
 from datetime import datetime
 
@@ -59,7 +60,7 @@ def main():
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
 
-    adb_path = os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
+    adb_path = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
     env = env_launcher.load_and_setup_env( # launch aw env
         console_port=args.console_port,
         emulator_setup=args.perform_emulator_setup,
@@ -95,8 +96,29 @@ def main():
             params = task_type.generate_random_params()
             task = task_type(params)
 
-            env.reset(go_home=True) # reset env to home screen
-            task.initialize_task(env) # initialize task
+            for _reset_attempt in range(3):
+                try:
+                    env.reset(go_home=True)
+                    break
+                except RuntimeError as e:
+                    print(f"[{task_name}] env.reset failed (attempt {_reset_attempt+1}/3): {e}")
+                    try:
+                        env.controller.refresh_env()
+                    except Exception:
+                        pass
+                    subprocess.run(["adb", "reconnect"], capture_output=True)
+                    time.sleep(5)
+            else:
+                print(f"[{task_name}] SKIPPED — could not reset env after 3 attempts")
+                results.append({"task": task_name, "combo": combo_idx, "goal": "", "success": False, "steps": 0, "time_s": 0, "latency_avg": {}, "token_totals": {}})
+                continue
+
+            try:
+                task.initialize_task(env)
+            except Exception as e:
+                print(f"[{task_name}] SKIPPED — initialize_task failed: {e}")
+                results.append({"task": task_name, "combo": combo_idx, "goal": "", "success": False, "steps": 0, "time_s": 0, "latency_avg": {}, "token_totals": {}})
+                continue
 
             goal = str(task.goal)
             max_steps = int(task.complexity * 15)
@@ -127,10 +149,19 @@ def main():
             step_records: list[dict] = []
             agent_done = False
             for step_idx in range(max_steps):
-                response = adapter.step(goal) # main loop driver
+                try:
+                    response = adapter.step(goal)
+                except Exception as e:
+                    print(f"[step {step_idx+1}] STEP CRASHED: {e}")
+                    try:
+                        env.controller.refresh_env()
+                    except Exception:
+                        pass
+                    time.sleep(3)
+                    continue
                 if response.data and "latency" in response.data:
                     step_records.append(response.data)
-                if response.done: # model said FINISH — stop immediately
+                if response.done:
                     agent_done = True
                     print("model said FINISH")
                     break
