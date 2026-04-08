@@ -60,7 +60,8 @@ def main():
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
 
-    adb_path = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
+    adb_path = os.path.expanduser(os.environ.get("ADB_PATH", "") or "adb")
+    config["ADB_PATH"] = adb_path
     env = env_launcher.load_and_setup_env( # launch aw env
         console_port=args.console_port,
         emulator_setup=args.perform_emulator_setup,

@@ -299,7 +299,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         # ADB path for uiautomator
         self._adb_path = os.path.expanduser(
-            config.get("ADB_PATH", "~/Android/Sdk/platform-tools/adb")
+            config.get("ADB_PATH", "") or "adb"
         )
 
         self.max_history_steps = config.get("MAX_HISTORY_STEPS", 0)
