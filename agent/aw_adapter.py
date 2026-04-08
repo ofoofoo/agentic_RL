@@ -3,12 +3,8 @@ from __future__ import annotations
 Wraps agent logic into AndroidWorld's EnvironmentInteractingAgent interface.
 """
 
-import io
-import json
 import os
-import re
 import subprocess
-import tempfile
 import time
 
 from PIL import Image, ImageDraw, ImageFont

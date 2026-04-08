@@ -1,4 +1,3 @@
-import json
 import re
 
 def parse_element_response(rsp: str) -> dict | None:
