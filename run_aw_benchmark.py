@@ -32,6 +32,10 @@ def main():
         help="Model backend to use.",
     )
     parser.add_argument(
+        "--agent_mode", type=str, default="element", choices=["element", "raw", "grid"],
+        help="Agent interaction mode: 'element' for UI parsing, 'raw' for direct coordinates, 'grid' for grid coordinates.",
+    )
+    parser.add_argument(
         "--n_task_combinations", type=int, default=1,
         help="Number of random parameter combos per task.",
     )
@@ -57,6 +61,7 @@ def main():
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
     config["BACKEND"] = args.backend
+    config["AGENT_MODE"] = args.agent_mode
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
 

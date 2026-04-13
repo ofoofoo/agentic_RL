@@ -166,6 +166,50 @@ The screen dimensions are {screen_width}x{screen_height}. Each grid cell is {cel
 """
 
 
+def build_raw_prompt(screen_width: int, screen_height: int) -> str:
+    """System prompt for raw normalized coordinate mode."""
+    return f"""\
+You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
+
+Your response MUST follow this exact format:
+  Observation: <Describe what you see on the current screen>
+  Thought: <To complete the given task, what is the next step I should do>
+  Action: <The function call with correct parameters, OR task_complete() if done>
+  Summary: <Summarize your past actions along with your latest action in one sentence>
+
+Available actions:
+
+  tap(x, y)
+    Tap a point on the screen. x is horizontal (0.0=left, 1.0=right),
+    y is vertical (0.0=top, 1.0=bottom).
+    Example: tap(0.512, 0.743)
+
+  swipe(x1, y1, x2, y2)
+    Swipe from (x1, y1) to (x2, y2).
+    Example: swipe(0.5, 0.8, 0.5, 0.2)
+
+  type(text_input)
+    Type text into the currently focused input field.
+    Example: type("Hello")
+
+  press_back()
+    Press the Android back button.
+
+  press_home()
+    Press the Android home button.
+
+  press_enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+
+  task_complete()
+    Output this when the task has been successfully completed.
+
+  task_impossible()
+    Output this when the task cannot be completed.
+
+The screen dimensions are {screen_width}x{screen_height} pixels."""
+
+
 def build_element_text_list(elem_list) -> str:
     """
     Build a text description of labeled elements to include in the prompt,

@@ -13,11 +13,12 @@ from android_world.agents import base_agent
 from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
-from .parse import parse_element_response, parse_grid_response
+from .parse import parse_element_response, parse_grid_response, parse_raw_response
 from .model import GeminiModel, VLLMModel
 from .prompt import (
     build_element_prompt,
     build_grid_prompt,
+    build_raw_prompt,
     build_element_text_list,
 )
 
@@ -288,6 +289,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 model_name=config["GEMINI_MODEL"],
             )
 
+        self.agent_mode = config.get("AGENT_MODE", "element")
+        self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H)
         self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
         self.grid_prompt = build_grid_prompt(SCREEN_W, SCREEN_H, CELL_W, CELL_H)
         self.output_dir = output_dir
@@ -370,7 +373,10 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         print("Done additional chrome initialization")
 
     def _build_prompt(self, goal: str) -> str:
-        sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
+        if self.agent_mode == "raw":
+            sys_prompt = self.raw_prompt
+        else:
+            sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
 
         # Full text history
         history_text = ""
@@ -409,7 +415,12 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         # 2. observation: element mode or grid mode
         t0 = time.perf_counter()
         image_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}.png")
-        if self._grid_on: # this is grid mode
+        if self.agent_mode == "raw":
+            img.save(image_path)
+            mode_img = img
+            self._elem_list = []
+            mode_str = "raw"
+        elif self._grid_on: # this is grid mode
             grid_img = _draw_numbered_grid(img.copy())
             grid_img.save(image_path) # Temporarily save for the model to read
             mode_img = grid_img
@@ -459,7 +470,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             return base_agent.AgentInteractionResult(done=False, data={"error": "empty_response"})
 
         # 5. parse structured response
-        if self._grid_on:
+        if self.agent_mode == "raw":
+            result = parse_raw_response(raw_response)
+        elif self._grid_on:
             result = parse_grid_response(raw_response)
         else:
             result = parse_element_response(raw_response)
@@ -508,7 +521,20 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         t0 = time.perf_counter()
         if not is_done:
             try:
-                if parsed_action["action"] == "swipe":
+                if parsed_action["action"] == "tap_raw":
+                    x = int(parsed_action["x"] * SCREEN_W)
+                    y = int(parsed_action["y"] * SCREEN_H)
+                    print(f"[aw_adapter] direct ADB tap ({x},{y})")
+                    self._adb_shell("input", "tap", str(x), str(y), timeout=10)
+                elif parsed_action["action"] == "swipe_raw":
+                    x1 = int(parsed_action["x1"] * SCREEN_W)
+                    y1 = int(parsed_action["y1"] * SCREEN_H)
+                    x2 = int(parsed_action["x2"] * SCREEN_W)
+                    y2 = int(parsed_action["y2"] * SCREEN_H)
+                    duration = 600
+                    print(f"[aw_adapter] direct ADB swipe ({x1},{y1})->({x2},{y2})")
+                    self._adb_shell("input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration), timeout=10)
+                elif parsed_action["action"] == "swipe":
                     elem = self._elem_list[parsed_action["element"] - 1]
                     x, y = elem.center
                     dist_name = parsed_action.get("dist", "medium")

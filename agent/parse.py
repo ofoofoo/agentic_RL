@@ -53,6 +53,76 @@ def parse_grid_response(rsp: str) -> dict | None:
     }
 
 
+def parse_raw_response(rsp: str) -> dict | None:
+    """Same as parse_element_response but for raw normalized coordinates."""
+    try:
+        observation = re.findall(r"Observation:\s*(.*?)$", rsp, re.MULTILINE)[0]
+        thought = re.findall(r"Thought:\s*(.*?)$", rsp, re.MULTILINE)[0]
+        act_str = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)[0]
+        summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)[0]
+    except IndexError:
+        return None
+
+    parsed = _parse_raw_action_string(act_str)
+    if parsed is None:
+        return None
+
+    return {
+        "observation": observation,
+        "thought": thought,
+        "action_raw": act_str,
+        "summary": summary,
+        "parsed_action": parsed,
+    }
+
+
+def _parse_raw_action_string(act_str: str) -> dict | None:
+    """Parser for raw normalized coordinate function calls."""
+    act_str = act_str.strip()
+    if "task_complete" in act_str.lower() or "task_impossible" in act_str.lower() or "finish" in act_str.lower():
+        return {"action": "done"}
+
+    if "(" not in act_str:
+        return None
+
+    act_name = act_str.split("(")[0].strip().lower()
+
+    try:
+        inner = re.findall(r'\((.*)\)', act_str)[0]
+        parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+
+        if act_name in ("tap", "click"):
+            return {"action": "tap_raw", "x": float(parts[0]), "y": float(parts[1])}
+
+        elif act_name == "swipe":
+            return {
+                "action": "swipe_raw",
+                "x1": float(parts[0]),
+                "y1": float(parts[1]),
+                "x2": float(parts[2]),
+                "y2": float(parts[3]),
+            }
+
+        elif act_name in ("text", "type", "input"):
+            text_val = inner.strip().strip('"').strip("'")
+            return {"action": "text", "text": text_val}
+
+        elif act_name == "press_back":
+            return {"action": "back"}
+
+        elif act_name == "press_home":
+            return {"action": "home"}
+
+        elif act_name == "press_enter":
+            return {"action": "enter"}
+
+        else:
+            return None
+
+    except (IndexError, ValueError):
+        return None
+
+
 def _to_int(s: str) -> int:
     """Extract integer from strings like 'element_6', 'elem6', '6'."""
     nums = re.findall(r'\d+', s)
