@@ -61,7 +61,10 @@ def parse_raw_response(rsp: str) -> dict | None:
         act_str = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)[0]
         summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)[0]
     except IndexError:
-        return None
+        observation = ""
+        thought = ""
+        act_str = rsp
+        summary = ""
 
     parsed = _parse_raw_action_string(act_str)
     if parsed is None:
