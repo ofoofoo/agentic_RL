@@ -13,7 +13,7 @@ from android_world.agents import base_agent
 from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
-from .parse import parse_element_response, parse_grid_response, parse_raw_response
+from .parse import parse_element_response, parse_grid_response, parse_raw_response, parse_response
 from .model import GeminiModel, VLLMModel
 from .prompt import (
     build_element_prompt,
@@ -305,7 +305,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         print(f"max history steps: {self.max_history_steps}")
         self._history: list[dict] = []
         self._step_count = 0
-        self._grid_on = False
         self._elem_list: list[UIElement] = []
 
     def _adb_shell(self, *args, timeout: int = 5):
@@ -333,7 +332,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
     def reset_episode(self) -> None:
         self._history = []
         self._step_count = 0
-        self._grid_on = False
         self._elem_list = []
     
     def initialize_chrome(self):
@@ -373,10 +371,12 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         print("Done additional chrome initialization")
 
     def _build_prompt(self, goal: str) -> str:
-        if self.agent_mode == "raw":
-            sys_prompt = self.raw_prompt
-        else:
-            sys_prompt = self.grid_prompt if self._grid_on else self.element_prompt
+        prompts = {
+            "raw": self.raw_prompt,
+            "grid": self.grid_prompt,
+            "element": self.element_prompt,
+        }
+        sys_prompt = prompts.get(self.agent_mode, self.element_prompt)
 
         # Full text history
         history_text = ""
@@ -385,7 +385,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
 
         elem_text = ""
-        if not self._grid_on and self._elem_list:
+        if self.agent_mode == "element" and self._elem_list:
             elem_text = build_element_text_list(self._elem_list) + "\n\n"
 
         max_steps = self._max_steps or 25
@@ -420,7 +420,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             mode_img = img
             self._elem_list = []
             mode_str = "raw"
-        elif self._grid_on: # this is grid mode
+        elif self.agent_mode == "grid":
             grid_img = _draw_numbered_grid(img.copy())
             grid_img.save(image_path) # Temporarily save for the model to read
             mode_img = grid_img
@@ -470,12 +470,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             return base_agent.AgentInteractionResult(done=False, data={"error": "empty_response"})
 
         # 5. parse structured response
-        if self.agent_mode == "raw":
-            result = parse_raw_response(raw_response)
-        elif self._grid_on:
-            result = parse_grid_response(raw_response)
-        else:
-            result = parse_element_response(raw_response)
+        result = parse_response(self.agent_mode, raw_response)
 
         if result is None:
             print(f"  [step {self._step_count}] WARNING: could not parse response, retrying")
@@ -489,33 +484,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         parsed_action = result["parsed_action"]
         is_done = parsed_action["action"] == "done"
-
-        # 6. handle grid toggle
-        if parsed_action["action"] == "grid":
-            self._grid_on = True
-            print(f"  [step {self._step_count}] Switching to grid mode")
-            self._history.append({
-                "summary": result.get("summary", "Switched to grid mode"),
-                "action": parsed_action,
-                "image_path": image_path,
-            })
-            # don't execute, just re-loop
-            t_step_total = time.perf_counter() - t_step_start
-            return base_agent.AgentInteractionResult(
-                done=False,
-                data={
-                    "step": self._step_count,
-                    "action": parsed_action,
-                    "latency": self._build_latency_dict(
-                        t_screenshot, t_preprocess, t_prompt, t_inference, 0.0, t_step_total, token_usage
-                    ),
-                    "image_path": image_path,
-                    "mode": "grid" if self._grid_on else "element",
-                },
-            )
-        else:
-            # after any non-grid action, switch back to element mode
-            self._grid_on = False
 
         # 7. execute action
         t0 = time.perf_counter()
@@ -592,7 +560,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     t_screenshot, t_preprocess, t_prompt, t_inference, t_action, t_step_total, token_usage
                 ),
                 "image_path": image_path,
-                "mode": "grid" if self._grid_on else "element",
+                "mode": self.agent_mode,
                 "n_elements": len(self._elem_list),
             },
         )

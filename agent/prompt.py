@@ -66,9 +66,6 @@ Available actions (use exactly one per step):
     WRONG:   swipe(element_3, "up", "medium")  ← do NOT use variable names
     WRONG:   swipe(505, 712, 505, 290)
 
-  grid()
-    Call this ONLY if the target element is NOT visible as a labeled number. This
-    switches to grid overlay mode where you can target any screen area.
 
   answer(text_input)
     Output the answer for information-retrieval tasks.
@@ -120,6 +117,13 @@ Your response MUST follow this exact format:
 
 Available actions:
 
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
   tap(area, subarea)
     Tap a grid area. "subarea" is one of: center, top-left, top, top-right,
     left, right, bottom-left, bottom, bottom-right.
@@ -132,6 +136,12 @@ Available actions:
   swipe(start_area, start_subarea, end_area, end_subarea)
     Swipe from one grid area to another.
     Example: swipe(21, "center", 25, "right")
+
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
 
   text(text_input)
     Type text into the currently focused input field.
@@ -172,9 +182,16 @@ def build_raw_prompt(screen_width: int, screen_height: int) -> str:
 You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
 
 Your response MUST follow this exact format:
-  <The function call with correct parameters, OR task_complete() if done>
+  <The function call with correct parameters, OR FINISH if done>
 
 Available actions:
+
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
 
   tap(x, y)
     Tap a point on the screen. x is horizontal (0.0=left, 1.0=right),
@@ -185,20 +202,39 @@ Available actions:
     Swipe from (x1, y1) to (x2, y2).
     Example: swipe(0.5, 0.8, 0.5, 0.2)
 
-  type(text_input)
-    Type text into the currently focused input field.
-    Example: type("Hello")
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
 
-  press_back()
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
+  back()
     Press the Android back button.
 
-  press_home()
+  home()
     Press the Android home button.
 
-  press_enter()
-    Press the Android Enter key. Useful for submitting forms or search queries.
-  
-  task_complete()
+  FINISH
     Output this when the task has been successfully completed.
 
 The screen dimensions are {screen_width}x{screen_height} pixels."""

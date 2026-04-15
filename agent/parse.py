@@ -1,5 +1,26 @@
 import re
 
+def _extract(rsp: str, key: str) -> str:
+    """Extract a single header field value, returning '' if not found."""
+    m = re.findall(rf"{key}:\s*(.*?)$", rsp, re.MULTILINE)
+    return m[0] if m else ""
+
+
+def _extract_action(rsp: str) -> str:
+    """Extract Action field, falling back to the full response strip."""
+    m = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)
+    return m[0] if m else rsp.strip()
+
+
+def parse_response(mode: str, rsp: str) -> dict | None:
+    if mode == "raw":
+        return parse_raw_response(rsp)
+    elif mode == "grid":
+        return parse_grid_response(rsp)
+    else:  # "element" or any future mode
+        return parse_element_response(rsp)
+
+
 def parse_element_response(rsp: str) -> dict | None:
     """
     Parse a structured Observation/Thought/Action/Summary response
@@ -7,19 +28,16 @@ def parse_element_response(rsp: str) -> dict | None:
       observation, thought, action_raw, summary, parsed_action
     or None if unparseable.
     """
-    try:
-        observation = re.findall(r"Observation:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        thought = re.findall(r"Thought:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        act_str = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)[0]
-    except IndexError:
-        return None
+    observation = _extract(rsp, "Observation")
+    thought     = _extract(rsp, "Thought")
+    summary     = _extract(rsp, "Summary")
+    act_str     = _extract_action(rsp)
 
     parsed = _parse_action_string(act_str, grid_mode=False)
     if parsed is None:
         return None
 
-    parsed_response = {
+    return {
         "observation": observation,
         "thought": thought,
         "action_raw": act_str,
@@ -27,18 +45,13 @@ def parse_element_response(rsp: str) -> dict | None:
         "parsed_action": parsed,
     }
 
-    return parsed_response
-
 
 def parse_grid_response(rsp: str) -> dict | None:
     """Same as parse_element_response but for grid-mode actions."""
-    try:
-        observation = re.findall(r"Observation:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        thought = re.findall(r"Thought:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        act_str = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)[0]
-    except IndexError:
-        return None
+    observation = _extract(rsp, "Observation")
+    thought     = _extract(rsp, "Thought")
+    summary     = _extract(rsp, "Summary")
+    act_str     = _extract_action(rsp)
 
     parsed = _parse_action_string(act_str, grid_mode=True)
     if parsed is None:
@@ -55,16 +68,10 @@ def parse_grid_response(rsp: str) -> dict | None:
 
 def parse_raw_response(rsp: str) -> dict | None:
     """Same as parse_element_response but for raw normalized coordinates."""
-    try:
-        observation = re.findall(r"Observation:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        thought = re.findall(r"Thought:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        act_str = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)[0]
-        summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)[0]
-    except IndexError:
-        observation = ""
-        thought = ""
-        act_str = rsp
-        summary = ""
+    observation = _extract(rsp, "Observation")
+    thought     = _extract(rsp, "Thought")
+    summary     = _extract(rsp, "Summary")
+    act_str     = _extract_action(rsp)
 
     parsed = _parse_raw_action_string(act_str)
     if parsed is None:
@@ -110,13 +117,32 @@ def _parse_raw_action_string(act_str: str) -> dict | None:
             text_val = inner.strip().strip('"').strip("'")
             return {"action": "text", "text": text_val}
 
-        elif act_name == "press_back":
+        elif act_name in ("clear_text", "clear", "delete_text", "erase_text"):
+            return {"action": "clear_text"}
+
+        elif act_name in ("open", "launch", "open_app", "launch_app"):
+            app_name = inner.strip().strip('"').strip("'")
+            return {"action": "open", "app": app_name}
+
+        elif act_name == "scroll":
+            direction = inner.strip().strip('"').strip("'").lower()
+            return {"action": "scroll", "direction": direction}
+
+        elif act_name == "answer":
+            text_val = inner.strip().strip('"').strip("'")
+            return {"action": "answer", "text": text_val}
+
+        elif act_name == "wait":
+            sec = int(inner.strip()) if inner.strip() else 2
+            return {"action": "wait", "time": sec}
+
+        elif act_name in ("press_back", "back"):
             return {"action": "back"}
 
-        elif act_name == "press_home":
+        elif act_name in ("press_home", "home"):
             return {"action": "home"}
 
-        elif act_name == "press_enter":
+        elif act_name in ("press_enter", "enter"):
             return {"action": "enter"}
 
         else:
