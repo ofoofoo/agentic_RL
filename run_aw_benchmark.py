@@ -55,6 +55,10 @@ def main():
         "--manual", type=bool, default=False,
         help="Manual mode: set to True to manually control the emulator for debugging a task."
     )
+    parser.add_argument(
+        "--thinking_mode", action="store_true",
+        help="Enable thinking prompt (defaults to False / non-thinking mode).",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -62,6 +66,7 @@ def main():
         config = yaml.safe_load(f)
     config["BACKEND"] = args.backend
     config["AGENT_MODE"] = args.agent_mode
+    config["THINKING_MODE"] = args.thinking_mode
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
 

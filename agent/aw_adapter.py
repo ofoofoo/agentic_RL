@@ -13,18 +13,23 @@ from android_world.agents import base_agent
 from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
-from .parse import parse_element_response, parse_grid_response, parse_rawcoord_response
+from .parse import parse_element_response, parse_grid_response, parse_response
 from .model import GeminiModel, VLLMModel
 from .prompt import (
     build_element_prompt,
     build_grid_prompt,
     build_coarse_grid_prompt,
     build_fine_grid_prompt,
-    build_rawcoord_prompt,
+    build_raw_prompt,
     build_element_text_list,
 )
 
 SCREEN_W, SCREEN_H = 1080, 2400
+
+# Single-level grid defaults (Orion): fixed cell size, derived grid count
+CELL_W, CELL_H = 54, 75
+GRID_COLS = SCREEN_W // CELL_W
+GRID_ROWS = SCREEN_H // CELL_H
 
 DEFAULT_GRID_ROWS = 8
 DEFAULT_GRID_COLS = 10
@@ -41,24 +46,29 @@ _SWIPE_DURATION   = {"short": 400,  "medium": 600,  "long": 800}
 
 def _draw_numbered_grid(
     img: Image.Image,
-    grid_rows: int,
-    grid_cols: int,
-    cell_w: int,
-    cell_h: int,
+    grid_rows: int | None = None,
+    grid_cols: int | None = None,
+    cell_w: int | None = None,
+    cell_h: int | None = None,
 ) -> Image.Image:
+    """Draw numbered grid; omit args to use module CELL_W/CELL_H/GRID_ROWS/GRID_COLS."""
+    gr = GRID_ROWS if grid_rows is None else grid_rows
+    gc = GRID_COLS if grid_cols is None else grid_cols
+    cw = CELL_W if cell_w is None else cell_w
+    ch = CELL_H if cell_h is None else cell_h
     draw = ImageDraw.Draw(img)
     color = (255, 116, 113)
-    font_size = max(20, min(cell_w, cell_h) // 4)
+    font_size = max(20, min(cw, ch) // 4)
     try:
         font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=font_size)
     except OSError:
         font = ImageFont.load_default()
 
-    for r in range(grid_rows):
-        for c in range(grid_cols):
-            label = r * grid_cols + c + 1
-            x0, y0 = c * cell_w, r * cell_h
-            x1, y1 = x0 + cell_w, y0 + cell_h
+    for r in range(gr):
+        for c in range(gc):
+            label = r * gc + c + 1
+            x0, y0 = c * cw, r * ch
+            x1, y1 = x0 + cw, y0 + ch
             draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
             draw.text((x0 + 4, y0 + 4), str(label), fill=color, font=font)
     return img
@@ -175,25 +185,28 @@ def _process_aw_ui_elements(aw_elements: list) -> list[UIElement]:
 def _area_to_xy(
     area: int,
     subarea: str,
-    grid_cols: int,
-    cell_w: int,
-    cell_h: int,
+    grid_cols: int | None = None,
+    cell_w: int | None = None,
+    cell_h: int | None = None,
 ) -> tuple[int, int]:
+    gc = GRID_COLS if grid_cols is None else grid_cols
+    cw = CELL_W if cell_w is None else cell_w
+    ch = CELL_H if cell_h is None else cell_h
     area -= 1
-    row, col = area // grid_cols, area % grid_cols
-    x0, y0 = col * cell_w, row * cell_h
+    row, col = area // gc, area % gc
+    x0, y0 = col * cw, row * ch
     offsets = {
-        "top-left":     (cell_w // 4,     cell_h // 4),
-        "top":          (cell_w // 2,     cell_h // 4),
-        "top-right":    (cell_w * 3 // 4, cell_h // 4),
-        "left":         (cell_w // 4,     cell_h // 2),
-        "center":       (cell_w // 2,     cell_h // 2),
-        "right":        (cell_w * 3 // 4, cell_h // 2),
-        "bottom-left":  (cell_w // 4,     cell_h * 3 // 4),
-        "bottom":       (cell_w // 2,     cell_h * 3 // 4),
-        "bottom-right": (cell_w * 3 // 4, cell_h * 3 // 4),
+        "top-left":     (cw // 4,     ch // 4),
+        "top":          (cw // 2,     ch // 4),
+        "top-right":    (cw * 3 // 4, ch // 4),
+        "left":         (cw // 4,     ch // 2),
+        "center":       (cw // 2,     ch // 2),
+        "right":        (cw * 3 // 4, ch // 2),
+        "bottom-left":  (cw // 4,     ch * 3 // 4),
+        "bottom":       (cw // 2,     ch * 3 // 4),
+        "bottom-right": (cw * 3 // 4, ch * 3 // 4),
     }
-    dx, dy = offsets.get(subarea, (cell_w // 2, cell_h // 2))
+    dx, dy = offsets.get(subarea, (cw // 2, ch // 2))
     return x0 + dx, y0 + dy
 
 
@@ -205,10 +218,13 @@ def _get_element_center(idx: int, elem_list: list[UIElement]) -> tuple[int, int]
 def _action_to_aw(
     parsed_action: dict,
     elem_list: list[UIElement] | None = None,
-    grid_cols: int = DEFAULT_GRID_COLS,
-    cell_w: int = SCREEN_W // DEFAULT_GRID_COLS,
-    cell_h: int = SCREEN_H // DEFAULT_GRID_ROWS,
+    grid_cols: int | None = None,
+    cell_w: int | None = None,
+    cell_h: int | None = None,
 ) -> json_action.JSONAction:
+    gc = GRID_COLS if grid_cols is None else grid_cols
+    cw = CELL_W if cell_w is None else cell_w
+    ch = CELL_H if cell_h is None else cell_h
     """Convert parsed action to AndroidWorld JSONAction."""
     name = parsed_action["action"]
 
@@ -237,16 +253,16 @@ def _action_to_aw(
 
     # ── Grid-mode actions ────────────────────────────────────────────
     if name == "tap_grid":
-        x, y = _area_to_xy(parsed_action["area"], parsed_action.get("subarea", "center"), grid_cols, cell_w, cell_h)
+        x, y = _area_to_xy(parsed_action["area"], parsed_action.get("subarea", "center"), gc, cw, ch)
         return json_action.JSONAction(action_type=json_action.CLICK, x=x, y=y)
 
     if name == "long_press_grid":
-        x, y = _area_to_xy(parsed_action["area"], parsed_action.get("subarea", "center"), grid_cols, cell_w, cell_h)
+        x, y = _area_to_xy(parsed_action["area"], parsed_action.get("subarea", "center"), gc, cw, ch)
         return json_action.JSONAction(action_type=json_action.LONG_PRESS, x=x, y=y)
 
     if name == "swipe_grid":
-        sx, sy = _area_to_xy(parsed_action["start_area"], parsed_action["start_subarea"], grid_cols, cell_w, cell_h)
-        ex, ey = _area_to_xy(parsed_action["end_area"], parsed_action["end_subarea"], grid_cols, cell_w, cell_h)
+        sx, sy = _area_to_xy(parsed_action["start_area"], parsed_action["start_subarea"], gc, cw, ch)
+        ex, ey = _area_to_xy(parsed_action["end_area"], parsed_action["end_subarea"], gc, cw, ch)
         dx, dy = ex - sx, ey - sy
         if abs(dx) >= abs(dy):
             direction = "right" if dx > 0 else "left"
@@ -312,44 +328,40 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             )
 
         self.agent_mode = config.get("AGENT_MODE", "element")
+        self.thinking_mode = config.get("THINKING_MODE", False)
+        self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H)
+        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
+        self.grid_prompt = build_grid_prompt(
+            SCREEN_W, SCREEN_H, CELL_W, CELL_H, thinking_mode=self.thinking_mode
+        )
 
-        self._grid_rows = config.get("GRID_ROWS", DEFAULT_GRID_ROWS)
-        self._grid_cols = config.get("GRID_COLS", DEFAULT_GRID_COLS)
-        self._cell_w = SCREEN_W // self._grid_cols
-        self._cell_h = SCREEN_H // self._grid_rows
-        print(f"grid: {self._grid_rows}x{self._grid_cols} = {self._grid_rows * self._grid_cols} cells, "
-              f"cell size {self._cell_w}x{self._cell_h} px")
-
+        # 2-level hierarchical grid (grid2level mode)
         self._coarse_rows = config.get("COARSE_GRID_ROWS", DEFAULT_COARSE_ROWS)
         self._coarse_cols = config.get("COARSE_GRID_COLS", DEFAULT_COARSE_COLS)
         self._coarse_cell_w = SCREEN_W // self._coarse_cols
         self._coarse_cell_h = SCREEN_H // self._coarse_rows
         self._fine_rows = config.get("FINE_GRID_ROWS", DEFAULT_FINE_ROWS)
         self._fine_cols = config.get("FINE_GRID_COLS", DEFAULT_FINE_COLS)
-        if self.agent_mode == "grid2level":
-            print(f"grid2level: coarse {self._coarse_rows}x{self._coarse_cols} "
-                  f"({self._coarse_cell_w}x{self._coarse_cell_h} px/cell), "
-                  f"fine {self._fine_rows}x{self._fine_cols}")
-
-        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
-        self.grid_prompt = build_grid_prompt(SCREEN_W, SCREEN_H, self._cell_w, self._cell_h)
         self.coarse_prompt = build_coarse_grid_prompt(
             SCREEN_W, SCREEN_H, self._coarse_cell_w, self._coarse_cell_h,
-            self._coarse_rows, self._coarse_cols)
-        self.rawcoord_prompt = build_rawcoord_prompt(SCREEN_W, SCREEN_H)
+            self._coarse_rows, self._coarse_cols,
+        )
+        if self.agent_mode == "grid2level":
+            print(
+                f"grid2level: coarse {self._coarse_rows}x{self._coarse_cols} "
+                f"({self._coarse_cell_w}x{self._coarse_cell_h} px/cell), "
+                f"fine {self._fine_rows}x{self._fine_cols}"
+            )
+
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
-        self._adb_path = os.path.expanduser(
-            config.get("ADB_PATH", "") or os.path.expanduser("~/Android/Sdk/platform-tools/adb")
-        )
+        self._adb_path = os.path.expanduser(config.get("ADB_PATH", "") or "adb")
 
         self.max_history_steps = config.get("MAX_HISTORY_STEPS", 0)
         print(f"max history steps: {self.max_history_steps}")
-        self._grid_only = self.agent_mode == "grid"
         self._history: list[dict] = []
         self._step_count = 0
-        self._grid_on = self._grid_only
         self._elem_list: list[UIElement] = []
 
     def _adb_shell(self, *args, timeout: int = 5):
@@ -377,7 +389,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
     def reset_episode(self) -> None:
         self._history = []
         self._step_count = 0
-        self._grid_on = self._grid_only
         self._elem_list = []
     
     def initialize_chrome(self):
@@ -419,12 +430,13 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
     def _build_prompt(self, goal: str, is_coarse: bool = False) -> str:
         if is_coarse:
             sys_prompt = self.coarse_prompt
-        elif self.agent_mode == "raw":
-            sys_prompt = self.rawcoord_prompt
-        elif self._grid_on:
-            sys_prompt = self.grid_prompt
         else:
-            sys_prompt = self.element_prompt
+            prompts = {
+                "raw": self.raw_prompt,
+                "grid": self.grid_prompt,
+                "element": self.element_prompt,
+            }
+            sys_prompt = prompts.get(self.agent_mode, self.element_prompt)
 
         # Full text history
         history_text = ""
@@ -433,7 +445,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
 
         elem_text = ""
-        if not self._grid_on and not is_coarse and self.agent_mode != "raw" and self._elem_list:
+        if not is_coarse and self.agent_mode == "element" and self._elem_list:
             elem_text = build_element_text_list(self._elem_list) + "\n\n"
 
         max_steps = self._max_steps or 25
@@ -803,14 +815,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         if self.agent_mode == "raw":
             img.save(image_path)
             mode_img = img
-            self._elem_list = _process_aw_ui_elements(state.ui_elements)
-            mode_str = f"raw ({len(self._elem_list)} elements)"
-        elif self._grid_on:
-            grid_img = _draw_numbered_grid(img.copy(), self._grid_rows, self._grid_cols, self._cell_w, self._cell_h)
-            grid_img.save(image_path)
+            self._elem_list = []
+            mode_str = "raw"
+        elif self.agent_mode == "grid":
+            grid_img = _draw_numbered_grid(img.copy())
+            grid_img.save(image_path)  # Temporarily save for the model to read
             mode_img = grid_img
             self._elem_list = []
-            mode_str = f"grid ({self._grid_rows}x{self._grid_cols})"
+            mode_str = f"grid ({GRID_ROWS}x{GRID_COLS})"
         else:
             self._elem_list = _process_aw_ui_elements(state.ui_elements)
             labeled_img = _draw_element_labels(img.copy(), self._elem_list)
@@ -854,12 +866,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             return base_agent.AgentInteractionResult(done=False, data={"error": "empty_response"})
 
         # 5. parse structured response
-        if self.agent_mode == "raw":
-            result = parse_rawcoord_response(raw_response)
-        elif self._grid_on:
-            result = parse_grid_response(raw_response)
-        else:
-            result = parse_element_response(raw_response)
+        result = parse_response(self.agent_mode, raw_response)
 
         if result is None:
             print(f"  [step {self._step_count}] WARNING: could not parse response, retrying")
@@ -874,64 +881,23 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         parsed_action = result["parsed_action"]
         is_done = parsed_action["action"] == "done"
 
-        # 6. handle grid toggle (only in element mode with grid fallback)
-        if parsed_action["action"] == "grid" and not self._grid_only:
-            print(f"  [step {self._step_count}] Switching to grid mode")
-            self._history.append({
-                "summary": result.get("summary", "Switched to grid mode"),
-                "action": parsed_action,
-                "image_path": image_path,
-            })
-            # don't execute, just re-loop
-            t_step_total = time.perf_counter() - t_step_start
-            return base_agent.AgentInteractionResult(
-                done=False,
-                data={
-                    "step": self._step_count,
-                    "action": parsed_action,
-                    "latency": self._build_latency_dict(
-                        t_screenshot, t_preprocess, t_prompt, t_inference, 0.0, t_step_total, token_usage
-                    ),
-                    "image_path": image_path,
-                    "mode": "grid" if self._grid_on else "element",
-                },
-            )
-        elif not self._grid_only:
-            # after any non-grid action, switch back to element mode
-            self._grid_on = False
-
         # 7. execute action
         t0 = time.perf_counter()
         if not is_done:
             try:
-                if parsed_action["action"] == "tap_xy":
-                    nx, ny = parsed_action["x"], parsed_action["y"]
-                    x = max(0, min(SCREEN_W - 1, int(nx * SCREEN_W) if nx <= 1.0 else int(nx)))
-                    y = max(0, min(SCREEN_H - 1, int(ny * SCREEN_H) if ny <= 1.0 else int(ny)))
-                    print(f"[aw_adapter] tap_xy norm({nx},{ny}) -> px({x},{y})")
-                    aw_action = json_action.JSONAction(action_type=json_action.CLICK, x=x, y=y)
-                    self._env.execute_action(aw_action)
-                elif parsed_action["action"] == "long_press_xy":
-                    nx, ny = parsed_action["x"], parsed_action["y"]
-                    x = max(0, min(SCREEN_W - 1, int(nx * SCREEN_W) if nx <= 1.0 else int(nx)))
-                    y = max(0, min(SCREEN_H - 1, int(ny * SCREEN_H) if ny <= 1.0 else int(ny)))
-                    print(f"[aw_adapter] long_press_xy norm({nx},{ny}) -> px({x},{y})")
-                    aw_action = json_action.JSONAction(action_type=json_action.LONG_PRESS, x=x, y=y)
-                    self._env.execute_action(aw_action)
-                elif parsed_action["action"] == "swipe_xy":
-                    nx, ny = parsed_action["x"], parsed_action["y"]
-                    x = max(0, min(SCREEN_W - 1, int(nx * SCREEN_W) if nx <= 1.0 else int(nx)))
-                    y = max(0, min(SCREEN_H - 1, int(ny * SCREEN_H) if ny <= 1.0 else int(ny)))
-                    direction = parsed_action["direction"]
-                    dist_name = parsed_action.get("dist", "medium")
-                    dist_px = int(SCREEN_H * _SWIPE_DIST_FRAC.get(dist_name, 0.40))
-                    duration = _SWIPE_DURATION.get(dist_name, 600)
-                    dx = {"left": -dist_px, "right": dist_px, "up": 0, "down": 0}.get(direction, 0)
-                    dy = {"left": 0, "right": 0, "up": -dist_px, "down": dist_px}.get(direction, 0)
-                    x2 = max(0, min(SCREEN_W - 1, x + dx))
-                    y2 = max(0, min(SCREEN_H - 1, y + dy))
-                    print(f"[aw_adapter] swipe_xy norm({nx},{ny}) -> px({x},{y})\u2192({x2},{y2}) {direction} {dist_name}")
-                    self._adb_shell("input", "swipe", str(x), str(y), str(x2), str(y2), str(duration), timeout=10)
+                if parsed_action["action"] == "tap_raw":
+                    x = int(parsed_action["x"] * SCREEN_W)
+                    y = int(parsed_action["y"] * SCREEN_H)
+                    print(f"[aw_adapter] direct ADB tap ({x},{y})")
+                    self._adb_shell("input", "tap", str(x), str(y), timeout=10)
+                elif parsed_action["action"] == "swipe_raw":
+                    x1 = int(parsed_action["x1"] * SCREEN_W)
+                    y1 = int(parsed_action["y1"] * SCREEN_H)
+                    x2 = int(parsed_action["x2"] * SCREEN_W)
+                    y2 = int(parsed_action["y2"] * SCREEN_H)
+                    duration = 600
+                    print(f"[aw_adapter] direct ADB swipe ({x1},{y1})->({x2},{y2})")
+                    self._adb_shell("input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration), timeout=10)
                 elif parsed_action["action"] == "swipe":
                     elem = self._elem_list[parsed_action["element"] - 1]
                     x, y = elem.center
@@ -967,13 +933,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     print(f"[aw_adapter] scroll {direction}: ADB swipe ({cx},{cy})\u2192({cx},{y2}) {dist_px}px {duration}ms")
                     self._adb_shell("input", "swipe", str(cx), str(cy), str(cx), str(y2), str(duration), timeout=10)
                 else:
-                    aw_action = _action_to_aw(
-                        parsed_action,
-                        elem_list=self._elem_list,
-                        grid_cols=self._grid_cols,
-                        cell_w=self._cell_w,
-                        cell_h=self._cell_h,
-                    )
+                    aw_action = _action_to_aw(parsed_action, elem_list=self._elem_list)
                     self._env.execute_action(aw_action)
             except Exception as e:
                 print(f"[step {self._step_count}] WARNING executing (continuing): {e}")
@@ -996,7 +956,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     t_screenshot, t_preprocess, t_prompt, t_inference, t_action, t_step_total, token_usage
                 ),
                 "image_path": image_path,
-                "mode": "grid" if self._grid_on else "element",
+                "mode": self.agent_mode,
                 "n_elements": len(self._elem_list),
             },
         )
