@@ -32,8 +32,8 @@ def main():
         help="Model backend to use.",
     )
     parser.add_argument(
-        "--agent_mode", type=str, default="element", choices=["element", "raw", "grid"],
-        help="Agent interaction mode: 'element' for UI parsing, 'raw' for direct coordinates, 'grid' for grid coordinates.",
+        "--agent_mode", type=str, default="element", choices=["element", "raw", "grid", "grid2level"],
+        help="Agent interaction mode: 'element' for UI parsing, 'raw' for normalized coordinates, 'grid' for grid overlay, 'grid2level' for hierarchical grid.",
     )
     parser.add_argument(
         "--n_task_combinations", type=int, default=1,
@@ -180,7 +180,6 @@ def main():
                     break
                 except Exception as e:
                     print(f"Error during is_successful check (attempt {is_success_attempt + 1}/3): {e}")
-                    import subprocess
                     subprocess.run(["adb", "reconnect"], capture_output=True)
                     time.sleep(3)
                     

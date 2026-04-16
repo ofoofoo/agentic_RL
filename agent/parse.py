@@ -126,6 +126,113 @@ def _parse_raw_action_string(act_str: str) -> dict | None:
         return None
 
 
+def parse_rawcoord_response(rsp: str) -> dict | None:
+    """Parse a structured response for raw-coordinate mode (tap(x,y) style)."""
+    try:
+        observation = re.findall(r"Observation:\s*(.*?)$", rsp, re.MULTILINE)[0]
+        thought = re.findall(r"Thought:\s*(.*?)$", rsp, re.MULTILINE)[0]
+        act_str = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)[0]
+        summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)[0]
+    except IndexError:
+        return None
+
+    parsed = _parse_rawcoord_action(act_str)
+    if parsed is None:
+        return None
+
+    return {
+        "observation": observation,
+        "thought": thought,
+        "action_raw": act_str,
+        "summary": summary,
+        "parsed_action": parsed,
+    }
+
+
+def _parse_rawcoord_action(act_str: str) -> dict | None:
+    """Parse action strings where tap/long_press use normalized (x,y) coordinates in [0,1]."""
+    act_str = act_str.strip()
+
+    if "FINISH" in act_str:
+        return {"action": "done"}
+
+    if "(" not in act_str:
+        return None
+    act_name = act_str.split("(")[0].strip().lower()
+
+    TAP_ALIASES   = {"tap", "click", "press", "tap_element"}
+    LP_ALIASES    = {"long_press", "longpress", "long_tap"}
+    TEXT_ALIASES  = {"text", "type", "input", "input_text"}
+    CLEAR_ALIASES = {"clear_text", "clear", "delete_text", "erase_text"}
+    OPEN_ALIASES  = {"open", "launch", "open_app", "launch_app"}
+    SWIPE_ALIASES = {"swipe", "swipe_element", "swipe_on", "swipe_to"}
+
+    try:
+        if act_name in TAP_ALIASES:
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+            if len(parts) >= 2:
+                return {"action": "tap_xy", "x": float(parts[0]), "y": float(parts[1])}
+            return None
+
+        elif act_name in LP_ALIASES:
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+            if len(parts) >= 2:
+                return {"action": "long_press_xy", "x": float(parts[0]), "y": float(parts[1])}
+            return None
+
+        elif act_name in SWIPE_ALIASES:
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+            if len(parts) >= 4:
+                return {
+                    "action": "swipe_xy",
+                    "x": float(parts[0]), "y": float(parts[1]),
+                    "direction": parts[2],
+                    "dist": parts[3],
+                }
+            return None
+
+        elif act_name in TEXT_ALIASES:
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            return {"action": "text", "text": inner.strip().strip('"').strip("'")}
+
+        elif act_name in CLEAR_ALIASES:
+            return {"action": "clear_text"}
+
+        elif act_name in OPEN_ALIASES:
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            return {"action": "open", "app": inner.strip().strip('"').strip("'")}
+
+        elif act_name == "scroll":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            return {"action": "scroll", "direction": inner.strip().strip('"').strip("'").lower()}
+
+        elif act_name == "answer":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            return {"action": "answer", "text": inner.strip().strip('"').strip("'")}
+
+        elif act_name == "wait":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            return {"action": "wait", "time": int(inner.strip()) if inner.strip() else 2}
+
+        elif act_name == "enter":
+            return {"action": "enter"}
+
+        elif act_name == "back":
+            return {"action": "back"}
+
+        elif act_name == "home":
+            return {"action": "home"}
+
+        else:
+            return None
+
+    except (IndexError, ValueError):
+        return None
+
+
 def _to_int(s: str) -> int:
     """Extract integer from strings like 'element_6', 'elem6', '6'."""
     nums = re.findall(r'\d+', s)
@@ -231,6 +338,10 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
 
         elif act_name == "grid":
             return {"action": "grid"}
+
+        elif act_name == "zoom":
+            inner = re.findall(r'\((.*)\)', act_str)[0]
+            return {"action": "zoom", "area": _to_int(inner)}
 
         elif act_name == "back":
             return {"action": "back"}
