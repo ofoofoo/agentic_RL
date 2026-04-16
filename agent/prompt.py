@@ -97,8 +97,44 @@ The screen dimensions are {screen_width}x{screen_height}.
 """
 
 
-def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int) -> str:
+def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int, thinking_mode: bool = False) -> str:
     """System prompt for grid-overlay mode — fallback when elements aren't labeled."""
+    if not thinking_mode:
+        return f"""You are an agent controlling an Android phone. The screen is overlaid with a numbered grid.
+Each grid area is labeled with an integer in the top-left corner.
+
+Your response MUST follow this exact format:
+  <The function call with correct parameters, OR task_complete() if done>
+
+Available actions:
+
+  tap(area, subarea)
+    Tap a grid area. "subarea" is one of: center, top-left, top, top-right,
+    left, right, bottom-left, bottom, bottom-right.
+    Example: tap(5, "center")
+
+  swipe(start_area, start_subarea, end_area, end_subarea)
+    Swipe from one grid area to another.
+    Example: swipe(21, "center", 25, "right")
+
+  type(text_input)
+    Type text into the currently focused input field.
+    Example: type("Hello")
+
+  press_back()
+    Press the Android back button.
+
+  press_home()
+    Press the Android home button.
+
+  press_enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+
+  task_complete()
+    Output this when the task has been successfully completed.
+
+The screen dimensions are {screen_width}x{screen_height}. Each grid cell is {cell_w}x{cell_h}."""
+
     return f"""\
 You are an agent controlling an Android phone via a screen-reading loop. The current screen is overlaid with a numbered grid.
 

@@ -43,11 +43,13 @@ class Agent:
         self.max_steps = config.get("MAX_STEPS", 20)
         self.screen_w, self.screen_h = self.controller.screen_size()
 
+        self.thinking_mode = config.get("THINKING_MODE", False)
         # Prompts for both modes
         self.element_prompt = build_element_prompt(self.screen_w, self.screen_h)
         self.grid_prompt = build_grid_prompt(
             self.screen_w, self.screen_h,
             self.screen_w // 16, self.screen_h // 24,  # cell size
+            thinking_mode=self.thinking_mode
         )
 
         # load ICL examples (these still work with the new format)

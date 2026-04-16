@@ -167,7 +167,7 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
     """
     act_str = act_str.strip()
 
-    if "FINISH" in act_str:
+    if "FINISH" in act_str or "task_complete" in act_str.lower() or "task_impossible" in act_str.lower():
         return {"action": "done"}
 
     # normalise: extract the function name before first "("
@@ -252,16 +252,16 @@ def _parse_action_string(act_str: str, grid_mode: bool) -> dict | None:
             sec = int(inner.strip()) if inner.strip() else 2
             return {"action": "wait", "time": sec}
 
-        elif act_name == "enter":
+        elif act_name in ("enter", "press_enter"):
             return {"action": "enter"}
 
         elif act_name == "grid":
             return {"action": "grid"}
 
-        elif act_name == "back":
+        elif act_name in ("back", "press_back"):
             return {"action": "back"}
 
-        elif act_name == "home":
+        elif act_name in ("home", "press_home"):
             return {"action": "home"}
 
         else:
