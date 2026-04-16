@@ -329,7 +329,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         self.agent_mode = config.get("AGENT_MODE", "element")
         self.thinking_mode = config.get("THINKING_MODE", False)
-        self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H)
+        self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
         self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
         self.grid_prompt = build_grid_prompt(
             SCREEN_W, SCREEN_H, CELL_W, CELL_H, thinking_mode=self.thinking_mode
