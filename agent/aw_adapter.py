@@ -960,3 +960,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 "n_elements": len(self._elem_list),
             },
         )
+
+    def reject_last_action(self, reason: str):
+        """Rejects the final action in the history so the model knows it failed."""
+        if self._history:
+            self._history[-1]["summary"] = f"Action rejected: {reason}"
+            self._history[-1]["action"] = {"action": "rejected"}

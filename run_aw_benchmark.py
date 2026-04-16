@@ -18,6 +18,23 @@ from dotenv import load_dotenv
 from android_world import registry
 from android_world.env import env_launcher
 from agent.aw_adapter import AWAgentAdapter
+from agent.model import GeminiModel, VLLMModel
+
+def check_with_oracle(oracle_model, goal: str, image_path: str) -> bool:
+    prompt = (
+        f"Task Goal: {goal}\n\n"
+        "Look at the provided Android screenshot. Has this goal been successfully achieved? "
+        "Explain your reasoning first and then:"
+        "Answer strictly with YES or NO."
+    )
+    try:
+        response_text, _ = oracle_model.generate(prompt=prompt, image_path=image_path)
+        text = response_text.strip()
+        print(f"  [Oracle check] '{text}'")
+        return "yes" in text.lower()
+    except Exception as e:
+        print(f"  [Oracle check Error] {e}")
+        return False
 
 
 def main():
@@ -59,6 +76,14 @@ def main():
         "--thinking_mode", action="store_true",
         help="Enable thinking prompt (defaults to False / non-thinking mode).",
     )
+    parser.add_argument(
+        "--oracle_backend", type=str, default=None, choices=["gemini", "vllm"],
+        help="Backend for the Oracle model to evaluate termination.",
+    )
+    parser.add_argument(
+        "--oracle_model", type=str, default="gemini-2.0-flash",
+        help="Oracle model name.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -78,6 +103,22 @@ def main():
         adb_path=adb_path,
     )
     env.reset(go_home=True)
+
+    if args.oracle_backend:
+        print(f"Initializing Oracle model: {args.oracle_backend} ({args.oracle_model})")
+        if args.oracle_backend.lower() == "vllm":
+            oracle_model = VLLMModel(
+                api_key=config["VLLM_API_KEY"],
+                model_name=args.oracle_model,
+                base_url=config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
+            )
+        else:
+            oracle_model = GeminiModel(
+                api_key=config["GEMINI_API_KEY"],
+                model_name=args.oracle_model,
+            )
+    else:
+        oracle_model = None
 
     task_registry = registry.TaskRegistry()
     aw_registry = task_registry.get_registry(task_registry.ANDROID_WORLD_FAMILY)
@@ -173,9 +214,24 @@ def main():
                 if response.data and "latency" in response.data:
                     step_records.append(response.data)
                 if response.done:
-                    agent_done = True
-                    print("model said FINISH")
-                    break
+                    if oracle_model is not None:
+                        print(f"  model said FINISH. Checking with Oracle...")
+                        oracle_is_done = check_with_oracle(oracle_model, goal, response.data["image_path"])
+                        if oracle_is_done:
+                            agent_done = True
+                            print("  \033[32mOracle confirmed task complete.\033[0m")
+                            break
+                        else:
+                            print("  \033[33mOracle says NOT COMPLETE. Rejecting FINISH.\033[0m")
+                            adapter.reject_last_action(
+                                "The oracle evaluated the screen and determined the task is not complete. "
+                                "Please do not use task_complete(); output a valid tap, swipe, or type action."
+                            )
+                            continue
+                    else:
+                        agent_done = True
+                        print("model said FINISH")
+                        break
             t_elapsed = time.perf_counter() - t_start
             # success = env confirms AND agent explicitly terminated
             task_successful = False
