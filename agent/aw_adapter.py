@@ -792,7 +792,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             aw_action = json_action.JSONAction(action_type=json_action.NAVIGATE_HOME)
             self._env.execute_action(aw_action)
 
-    def step(self, goal: str) -> base_agent.AgentInteractionResult:
+    def step(self, goal: str, oracle_model=None, oracle_fn=None) -> base_agent.AgentInteractionResult:
         if self.agent_mode == "grid2level":
             return self._step_grid2level(goal)
 
@@ -830,6 +830,23 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             mode_img = labeled_img
             mode_str = f"element ({len(self._elem_list)} elements)"
         t_preprocess = time.perf_counter() - t0
+
+        if oracle_fn and oracle_model:
+            print(f"  [aw_adapter] Querying Oracle on {image_path}...")
+            if oracle_fn(oracle_model, goal, image_path):
+                print("  \033[32mOracle confirmed task complete before inference.\033[0m")
+                return base_agent.AgentInteractionResult(
+                    done=True,
+                    data={
+                        "step": self._step_count,
+                        "action": {"action": "done"},
+                        "image_path": image_path,
+                        "mode": self.agent_mode,
+                        "latency": self._build_latency_dict(
+                            t_screenshot, t_preprocess, 0, 0, 0, time.perf_counter() - t_step_start, {}
+                        ),
+                    }
+                )
 
         # 3. build prompt
         t0 = time.perf_counter()

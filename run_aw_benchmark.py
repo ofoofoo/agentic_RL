@@ -31,7 +31,7 @@ def check_with_oracle(oracle_model, goal: str, image_path: str) -> bool:
         response_text, _ = oracle_model.generate(prompt=prompt, image_path=image_path)
         text = response_text.strip()
         print(f"  [Oracle check] '{text}'")
-        return "yes" in text.lower()
+        return text.lower().strip().endswith("yes")
     except Exception as e:
         print(f"  [Oracle check Error] {e}")
         return False
@@ -83,6 +83,10 @@ def main():
     parser.add_argument(
         "--oracle_model", type=str, default="gemini-2.0-flash",
         help="Oracle model name.",
+    )
+    parser.add_argument(
+        "--oracle_mode", type=str, default="intercept", choices=["intercept", "every_step"],
+        help="Whether to intercept FINISH outputs, or check on every step.",
     )
     args = parser.parse_args()
 
@@ -202,7 +206,10 @@ def main():
             agent_done = False
             for step_idx in range(max_steps):
                 try:
-                    response = adapter.step(goal)
+                    kwargs = {}
+                    if args.oracle_mode == "every_step" and oracle_model is not None:
+                        kwargs = {"oracle_model": oracle_model, "oracle_fn": check_with_oracle}
+                    response = adapter.step(goal, **kwargs)
                 except Exception as e:
                     print(f"[step {step_idx+1}] STEP CRASHED: {e}")
                     try:
@@ -214,7 +221,7 @@ def main():
                 if response.data and "latency" in response.data:
                     step_records.append(response.data)
                 if response.done:
-                    if oracle_model is not None:
+                    if args.oracle_mode == "intercept" and oracle_model is not None:
                         print(f"  model said FINISH. Checking with Oracle...")
                         oracle_is_done = check_with_oracle(oracle_model, goal, response.data["image_path"])
                         if oracle_is_done:
