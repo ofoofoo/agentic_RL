@@ -571,8 +571,11 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             t_action = time.perf_counter() - t0
             t_step_total = time.perf_counter() - t_step_start
 
+            summary_val = coarse_result.get("summary")
+            if not summary_val:
+                summary_val = coarse_raw[:100]
             self._history.append({
-                "summary": coarse_result.get("summary", coarse_raw[:100]),
+                "summary": summary_val,
                 "action": coarse_action,
                 "image_path": coarse_path,
             })
@@ -670,7 +673,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         combined_usage = self._combine_usage(coarse_usage, fine_usage)
         t_step_total = time.perf_counter() - t_step_start
 
-        summary = fine_result.get("summary", fine_raw[:100])
+        summary = fine_result.get("summary")
+        if not summary:
+            summary = fine_raw[:100]
         self._history.append({
             "summary": f"[zoom {zoom_area}] {summary}",
             "action": fine_action,
@@ -976,9 +981,12 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         t_action = time.perf_counter() - t0
         t_step_total = time.perf_counter() - t_step_start
 
+        summary_val = result.get("summary")
+        if not summary_val:
+            summary_val = raw_response[:100]
         # 8. update history
         self._history.append({
-            "summary": result.get("summary", raw_response[:100]),
+            "summary": summary_val,
             "action": parsed_action,
             "image_path": image_path,
         })
