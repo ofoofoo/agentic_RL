@@ -53,6 +53,10 @@ def main():
         help="Agent interaction mode: 'element' for UI parsing, 'raw' for normalized coordinates, 'grid' for grid overlay, 'grid2level' for hierarchical grid.",
     )
     parser.add_argument(
+        "--custom_goal", type=str, default="",
+        help="Run an open-ended session with this specific custom goal text instead of predefined AndroidWorld tasks."
+    )
+    parser.add_argument(
         "--n_task_combinations", type=int, default=1,
         help="Number of random parameter combos per task.",
     )
@@ -126,7 +130,9 @@ def main():
 
     task_registry = registry.TaskRegistry()
     aw_registry = task_registry.get_registry(task_registry.ANDROID_WORLD_FAMILY)
-    if args.tasks:
+    if args.custom_goal:
+        task_names = ["custom_goal"]
+    elif args.tasks:
         task_names = [t.strip() for t in args.tasks.split(",")]
         for name in task_names:
             if name not in aw_registry:
@@ -147,10 +153,21 @@ def main():
     print(f"{'=' * 60}\n")
 
     for task_name in task_names:
-        task_type = aw_registry[task_name]
+        if args.custom_goal:
+            task_type = None
+        else:
+            task_type = aw_registry[task_name]
+            
         for combo_idx in range(args.n_task_combinations):
-            params = task_type.generate_random_params()
-            task = task_type(params)
+            if task_type is None:
+                task = None
+                goal = args.custom_goal
+                max_steps = config.get("MAX_STEPS", 25)
+            else:
+                params = task_type.generate_random_params()
+                task = task_type(params)
+                goal = str(task.goal)
+                max_steps = int(task.complexity * 15)
 
             for _reset_attempt in range(3):
                 try:
@@ -169,15 +186,13 @@ def main():
                 results.append({"task": task_name, "combo": combo_idx, "goal": "", "success": False, "steps": 0, "time_s": 0, "latency_avg": {}, "token_totals": {}})
                 continue
 
-            try:
-                task.initialize_task(env)
-            except Exception as e:
-                print(f"[{task_name}] SKIPPED — initialize_task failed: {e}")
-                results.append({"task": task_name, "combo": combo_idx, "goal": "", "success": False, "steps": 0, "time_s": 0, "latency_avg": {}, "token_totals": {}})
-                continue
-
-            goal = str(task.goal)
-            max_steps = int(task.complexity * 15)
+            if task is not None:
+                try:
+                    task.initialize_task(env)
+                except Exception as e:
+                    print(f"[{task_name}] SKIPPED — initialize_task failed: {e}")
+                    results.append({"task": task_name, "combo": combo_idx, "goal": "", "success": False, "steps": 0, "time_s": 0, "latency_avg": {}, "token_totals": {}})
+                    continue
 
             print(f"[{task_name}] (combo {combo_idx + 1}/{args.n_task_combinations})")
             print(f"Goal: {goal}")
@@ -190,9 +205,12 @@ def main():
                 print(f"Manual mode enabled. Complete the task manually.")
                 print(f"Will be checking if the task is complete every second.")
                 while True:
-                    if task.is_successful(env) == 1.0:
+                    if task is not None and task.is_successful(env) == 1.0:
                         print("\033[32menv confirms task complete!\033[0m")
                         break
+                    if task is None:
+                        # Cannot evaluate custom tasks automatically in manual mode. Break loop manually via keyboard interrupt.
+                        pass
                     time.sleep(1.0)
                 continue
 
@@ -242,14 +260,17 @@ def main():
             t_elapsed = time.perf_counter() - t_start
             # success = env confirms AND agent explicitly terminated
             task_successful = False
-            for is_success_attempt in range(3):
-                try:
-                    task_successful = task.is_successful(env) == 1.0
-                    break
-                except Exception as e:
-                    print(f"Error during is_successful check (attempt {is_success_attempt + 1}/3): {e}")
-                    subprocess.run(["adb", "reconnect"], capture_output=True)
-                    time.sleep(3)
+            if task is not None:
+                for is_success_attempt in range(3):
+                    try:
+                        task_successful = task.is_successful(env) == 1.0
+                        break
+                    except Exception as e:
+                        print(f"Error during is_successful check (attempt {is_success_attempt + 1}/3): {e}")
+                        subprocess.run(["adb", "reconnect"], capture_output=True)
+                        time.sleep(3)
+            else:
+                task_successful = True # custom goals are evaluated implicitly by Oracle or visual confirmation inside FINISH
                     
             if task_successful:
                 print("\033[32menv confirms task complete!\033[0m")

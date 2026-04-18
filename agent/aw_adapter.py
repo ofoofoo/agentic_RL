@@ -329,11 +329,30 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         self.agent_mode = config.get("AGENT_MODE", "element")
         self.thinking_mode = config.get("THINKING_MODE", False)
+        
         self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
         self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
         self.grid_prompt = build_grid_prompt(
             SCREEN_W, SCREEN_H, CELL_W, CELL_H, thinking_mode=self.thinking_mode
         )
+
+        custom_prompt_file = config.get("CUSTOM_PROMPT_FILE", "")
+        custom_prompt_text = config.get("CUSTOM_PROMPT", "")
+
+        if custom_prompt_file and os.path.exists(custom_prompt_file):
+            print(f"Loading custom prompt from {custom_prompt_file}")
+            with open(custom_prompt_file, "r") as f:
+                custom_prompt_text = f.read()
+
+        if custom_prompt_text:
+            print("Using custom prompt from config.")
+            if self.agent_mode == "raw":
+                self.raw_prompt = custom_prompt_text
+            elif self.agent_mode == "grid":
+                self.grid_prompt = custom_prompt_text
+            elif self.agent_mode == "element":
+                self.element_prompt = custom_prompt_text
+
 
         # 2-level hierarchical grid (grid2level mode)
         self._coarse_rows = config.get("COARSE_GRID_ROWS", DEFAULT_COARSE_ROWS)
