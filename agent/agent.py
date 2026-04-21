@@ -10,6 +10,9 @@ import os
 import time
 from datetime import datetime
 
+import numpy as np
+from PIL import Image
+
 from .android_controller import AndroidController, UIElement
 from .model import GeminiModel, VLLMModel
 from .prompt import (
@@ -60,11 +63,16 @@ class Agent:
         else:
             print(f"[agent] No ICL examples found in {examples_dir}: running zero-shot")
 
+        self._screen_change_threshold = config.get("SCREEN_CHANGE_THRESHOLD", 0.02)
+        self._max_stall_steps = config.get("MAX_STALL_STEPS", 3)
+        self._stall_action = config.get("STALL_ACTION", "nudge")
+
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _build_prompt(
         self, task: str, step: int, history: list[dict],
         grid_on: bool, elem_list: list | None = None,
+        stall_count: int = 0,
     ) -> str:
         sys_prompt = self.grid_prompt if grid_on else self.element_prompt
 
@@ -79,11 +87,34 @@ class Agent:
         if not grid_on and elem_list:
             elem_text = build_element_text_list(elem_list) + "\n\n"
 
+        stall_text = ""
+        if stall_count > 0:
+            recent_actions = []
+            for h in history[-stall_count:]:
+                act = h.get("action", {})
+                name = act.get("action", "unknown")
+                if name in ("tap", "tap_grid", "tap_raw"):
+                    recent_actions.append(f"{name}(element={act.get('element', act.get('area', '?'))})")
+                elif name in ("text",):
+                    recent_actions.append(f"text(\"{act.get('text', '')}\")")
+                elif name in ("swipe", "scroll", "swipe_grid"):
+                    recent_actions.append(f"{name}({act.get('direction', '?')})")
+                else:
+                    recent_actions.append(name)
+            tried_str = ", ".join(recent_actions) if recent_actions else "unknown"
+            stall_text = (
+                f"WARNING: The screen has not changed for {stall_count} consecutive "
+                f"step(s). The actions you tried that had NO effect: [{tried_str}]. "
+                f"These actions are NOT working. You MUST try a completely different "
+                f"approach — different action type, different target, or different element.\n\n"
+            )
+
         return (
             f"{sys_prompt}\n\n"
             f"Task: {task}\n\n"
             f"{elem_text}"
             f"{history_text}"
+            f"{stall_text}"
             f"Current step: {step + 1} / {self.max_steps}\n"
             f"What is the next action?"
         )
@@ -212,6 +243,9 @@ class Agent:
         grid_on = False
         rows, cols = 24, 16  # grid dimensions (only used in fallback)
         elem_list: list[UIElement] = []
+        prev_screenshot: Image.Image | None = None
+        stall_count = 0
+        max_stall_count = 0
 
         trajectory_start = time.perf_counter()
 
@@ -238,8 +272,49 @@ class Agent:
                 image_path = labeled_path
                 print(f"[step {step + 1}] Element mode: {len(elem_list)} elements")
 
+            # ── Screen-change detection ────────────────────────────────
+            curr_screenshot = Image.open(image_path).convert("RGB")
+            if prev_screenshot is not None:
+                thumb_size = (270, 600)
+                p = np.asarray(prev_screenshot.resize(thumb_size, Image.BILINEAR), dtype=np.float32)
+                c = np.asarray(curr_screenshot.resize(thumb_size, Image.BILINEAR), dtype=np.float32)
+                screen_diff = float(np.mean(np.abs(p - c)) / 255.0)
+            else:
+                screen_diff = 1.0
+            if screen_diff < self._screen_change_threshold:
+                stall_count += 1
+            else:
+                stall_count = 0
+            max_stall_count = max(max_stall_count, stall_count)
+            prev_screenshot = curr_screenshot
+            print(f"[step {step + 1}] screen-diff={screen_diff:.4f}  stall_count={stall_count}")
+
+            if (self._stall_action == "terminate"
+                    and stall_count >= self._max_stall_steps):
+                print(f"\n[agent] Terminating: screen unchanged for "
+                      f"{stall_count} steps (threshold={self._screen_change_threshold})")
+                record = {
+                    "step": step,
+                    "action": {"action": "stall_terminated"},
+                    "screen_diff": round(screen_diff, 4),
+                    "stall_count": stall_count,
+                    "stall_terminated": True,
+                    "timestamp": time.time(),
+                    "grid_on": grid_on,
+                    "n_elements": len(elem_list),
+                    "latency": {
+                        "adb_s": round(t_adb, 3),
+                        "preprocess_s": round(t_preprocess, 3),
+                        "inference_s": 0,
+                        "step_total_s": round(time.perf_counter() - step_start, 3),
+                    },
+                }
+                with open(trajectory_path, "a") as f:
+                    f.write(json.dumps(record) + "\n")
+                break
+
             # ── Prompt ───────────────────────────────────────────────────
-            prompt = self._build_prompt(task, step, history, grid_on, elem_list)
+            prompt = self._build_prompt(task, step, history, grid_on, elem_list, stall_count=stall_count)
 
             # ── Inference ────────────────────────────────────────────────
             t0 = time.perf_counter()
@@ -278,6 +353,8 @@ class Agent:
                 "timestamp": time.time(),
                 "grid_on": grid_on,
                 "n_elements": len(elem_list),
+                "screen_diff": round(screen_diff, 4),
+                "stall_count": stall_count,
                 "latency": {
                     "adb_s":         round(t_adb, 3),
                     "preprocess_s":  round(t_preprocess, 3),
