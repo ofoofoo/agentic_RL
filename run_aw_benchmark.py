@@ -92,6 +92,18 @@ def main():
         "--oracle_mode", type=str, default="intercept", choices=["intercept", "every_step"],
         help="Whether to intercept FINISH outputs, or check on every step.",
     )
+    parser.add_argument(
+        "--n_warning", type=int, default=None,
+        help="Number of consecutive stalled steps before nudging/terminating (overrides MAX_STALL_STEPS in config.yaml).",
+    )
+    parser.add_argument(
+        "--stall_action", type=str, default=None, choices=["nudge", "terminate"],
+        help="Action on screen stall: 'nudge' = warn model in prompt, 'terminate' = end run early (overrides STALL_ACTION in config.yaml).",
+    )
+    parser.add_argument(
+        "--stall_threshold", type=float, default=None,
+        help="Mean pixel diff below this counts as 'unchanged' screen, range 0.0-1.0 (overrides SCREEN_CHANGE_THRESHOLD in config.yaml).",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -102,6 +114,13 @@ def main():
     config["THINKING_MODE"] = args.thinking_mode
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
+
+    if args.n_warning is not None:
+        config["MAX_STALL_STEPS"] = args.n_warning
+    if args.stall_action is not None:
+        config["STALL_ACTION"] = args.stall_action
+    if args.stall_threshold is not None:
+        config["SCREEN_CHANGE_THRESHOLD"] = args.stall_threshold
 
     adb_path = os.path.expanduser(os.environ.get("ADB_PATH", "") or "adb")
     config["ADB_PATH"] = adb_path
@@ -238,6 +257,10 @@ def main():
                     continue
                 if response.data and "latency" in response.data:
                     step_records.append(response.data)
+                if response.data and response.data.get("stall_terminated"):
+                    print(f"  \033[33m[screen-stall] Run terminated: screen unchanged for "
+                          f"{response.data.get('stall_count', '?')} consecutive steps\033[0m")
+                    break
                 if response.done:
                     if args.oracle_mode == "intercept" and oracle_model is not None:
                         print(f"  model said FINISH. Checking with Oracle...")
@@ -282,8 +305,8 @@ def main():
                   f"({step_idx + 1} steps, {t_elapsed:.1f}s)")
 
             if step_records:
-                print(f"{'Step':>4}  {'Screenshot':>10}  {'Preprocess':>10}  {'Prompt':>7}  {'Inference':>9}  {'Action':>7}  {'Total':>7}  {'TTFT':>7}  {'Decode':>7}  {'TPOT(ms)':>8}  {'PTok':>6}  {'CTok':>5}")
-                print("   " + "-" * 112)
+                print(f"{'Step':>4}  {'Screenshot':>10}  {'Preprocess':>10}  {'Prompt':>7}  {'Inference':>9}  {'Action':>7}  {'Total':>7}  {'TTFT':>7}  {'Decode':>7}  {'TPOT(ms)':>8}  {'PTok':>6}  {'CTok':>5}  {'Diff':>6}  {'Stall':>5}")
+                print("   " + "-" * 130)
                 for rec in step_records:
                     lat = rec["latency"]
                     print(f"   {rec['step']:>4}  "
@@ -297,18 +320,25 @@ def main():
                           f"{lat.get('decode_s', 0):>6.3f}s  "
                           f"{lat.get('tpot_ms', 0):>8.1f}  "
                           f"{lat.get('prompt_tokens', 0):>6}  "
-                          f"{lat.get('completion_tokens', 0):>5}")
+                          f"{lat.get('completion_tokens', 0):>5}  "
+                          f"{rec.get('screen_diff', 0):>6.4f}  "
+                          f"{rec.get('stall_count', 0):>5}")
                 def avg(key): return sum(r["latency"][key] for r in step_records) / len(step_records)
                 def avgo(key): return sum(r["latency"].get(key, 0) for r in step_records) / len(step_records)
                 def total_tok(key): return sum(r["latency"].get(key, 0) for r in step_records)
-                print("   " + "-" * 112)
+                avg_diff = sum(r.get("screen_diff", 0) for r in step_records) / len(step_records)
+                max_stall = max(r.get("stall_count", 0) for r in step_records)
+                print("   " + "-" * 130)
                 print(f"   {'avg':>4}  {avg('screenshot_s'):>9.2f}s  {avg('preprocess_s'):>9.2f}s  "
                       f"{avg('prompt_s'):>6.2f}s  {avg('inference_s'):>8.2f}s  {avgo('action_s'):>6.2f}s  {avg('step_total_s'):>6.2f}s  "
                       f"{avgo('ttft_s'):>6.3f}s  {avgo('decode_s'):>6.3f}s  {avgo('tpot_ms'):>8.1f}  "
-                      f"{int(avgo('prompt_tokens')):>6}  {int(avgo('completion_tokens')):>5}")
+                      f"{int(avgo('prompt_tokens')):>6}  {int(avgo('completion_tokens')):>5}  "
+                      f"{avg_diff:>6.4f}  {max_stall:>5}")
                 print(f"   {'SUM':>4}  {'':>10}  {'':>10}  {'':>7}  {'':>9}  {'':>7}  {'':>7}  {'':>7}  {'':>7}  {'':>8}  "
                       f"{total_tok('prompt_tokens'):>6}  {total_tok('completion_tokens'):>5}")
 
+            stall_terminated = any(r.get("stall_terminated") for r in step_records)
+            max_stall_in_run = max((r.get("stall_count", 0) for r in step_records), default=0)
             results.append({
                 "task": task_name,
                 "combo": combo_idx,
@@ -316,6 +346,8 @@ def main():
                 "success": success,
                 "steps": step_idx + 1,
                 "time_s": round(t_elapsed, 2),
+                "stall_terminated": stall_terminated,
+                "max_stall_count": max_stall_in_run,
                 "latency_avg": {
                     "screenshot_s":  round(sum(r["latency"]["screenshot_s"]  for r in step_records) / len(step_records), 3),
                     "preprocess_s":  round(sum(r["latency"]["preprocess_s"]  for r in step_records) / len(step_records), 3),

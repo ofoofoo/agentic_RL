@@ -7,6 +7,7 @@ import os
 import subprocess
 import time
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from android_world.agents import base_agent
@@ -302,6 +303,21 @@ def _action_to_aw(
     raise ValueError(f"Unknown action: {name!r}")
 
 
+DIFF_THUMBNAIL_SIZE = (270, 600)
+
+def _compute_screen_diff(prev: Image.Image | None, curr: Image.Image) -> float:
+    """Normalized mean absolute pixel difference between two frames (0.0–1.0).
+
+    Resizes to a small thumbnail first so the comparison is fast.
+    Returns 1.0 when prev is None (first frame always counts as "changed").
+    """
+    if prev is None:
+        return 1.0
+    p = np.asarray(prev.resize(DIFF_THUMBNAIL_SIZE, Image.BILINEAR), dtype=np.float32)
+    c = np.asarray(curr.resize(DIFF_THUMBNAIL_SIZE, Image.BILINEAR), dtype=np.float32)
+    return float(np.mean(np.abs(p - c)) / 255.0)
+
+
 class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
     """Wraps agent to run inside AndroidWorld's harness."""
 
@@ -383,6 +399,13 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self._step_count = 0
         self._elem_list: list[UIElement] = []
 
+        self._screen_change_threshold = config.get("SCREEN_CHANGE_THRESHOLD", 0.02)
+        self._max_stall_steps = config.get("MAX_STALL_STEPS", 3)
+        self._stall_action = config.get("STALL_ACTION", "nudge")
+        self._prev_screenshot: Image.Image | None = None
+        self._stall_count = 0
+        self._max_stall_count = 0
+
     def _adb_shell(self, *args, timeout: int = 5):
         return subprocess.run([self._adb_path, "shell"] + list(args), timeout=timeout)
 
@@ -409,6 +432,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self._history = []
         self._step_count = 0
         self._elem_list = []
+        self._prev_screenshot = None
+        self._stall_count = 0
+        self._max_stall_count = 0
     
     def initialize_chrome(self):
         print("Running additional chrome initialization...")
@@ -467,12 +493,35 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         if not is_coarse and self.agent_mode == "element" and self._elem_list:
             elem_text = build_element_text_list(self._elem_list) + "\n\n"
 
+        stall_text = ""
+        if self._stall_count > 0:
+            recent_actions = []
+            for h in self._history[-self._stall_count:]:
+                act = h.get("action", {})
+                name = act.get("action", "unknown")
+                if name in ("tap", "tap_grid", "tap_raw"):
+                    recent_actions.append(f"{name}(element={act.get('element', act.get('area', '?'))})")
+                elif name in ("text",):
+                    recent_actions.append(f"text(\"{act.get('text', '')}\")")
+                elif name in ("swipe", "scroll", "swipe_grid"):
+                    recent_actions.append(f"{name}({act.get('direction', '?')})")
+                else:
+                    recent_actions.append(name)
+            tried_str = ", ".join(recent_actions) if recent_actions else "unknown"
+            stall_text = (
+                f"WARNING: The screen has not changed for {self._stall_count} consecutive "
+                f"step(s). The actions you tried that had NO effect: [{tried_str}]. "
+                f"These actions are NOT working. You MUST try a completely different "
+                f"approach — different action type, different target, or different element.\n\n"
+            )
+
         max_steps = self._max_steps or 25
         return (
             f"{sys_prompt}\n\n"
             f"Task: {goal}\n\n"
             f"{elem_text}"
             f"{history_text}"
+            f"{stall_text}"
             f"Current step: {self._step_count + 1} / {max_steps}\n"
             f"What is the next action?"
         )
@@ -511,6 +560,33 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         t_screenshot = time.perf_counter() - t0
         pixels = state.pixels
         img = Image.fromarray(pixels).convert("RGB")
+
+        screen_diff = _compute_screen_diff(self._prev_screenshot, img)
+        if screen_diff < self._screen_change_threshold:
+            self._stall_count += 1
+        else:
+            self._stall_count = 0
+        self._max_stall_count = max(self._max_stall_count, self._stall_count)
+        self._prev_screenshot = img.copy()
+        print(f"  [screen-diff] diff={screen_diff:.4f}  stall_count={self._stall_count}")
+
+        if (self._stall_action == "terminate"
+                and self._stall_count >= self._max_stall_steps):
+            print(f"  [screen-stall] Terminating: screen unchanged for "
+                  f"{self._stall_count} steps (threshold={self._screen_change_threshold})")
+            return base_agent.AgentInteractionResult(
+                done=False,
+                data={
+                    "step": self._step_count,
+                    "action": {"action": "stall_terminated"},
+                    "screen_diff": round(screen_diff, 4),
+                    "stall_count": self._stall_count,
+                    "stall_terminated": True,
+                    "latency": self._build_latency_dict(
+                        t_screenshot, 0, 0, 0, 0,
+                        time.perf_counter() - t_step_start, {}),
+                },
+            )
 
         t0 = time.perf_counter()
         coarse_path = os.path.join(self.output_dir, f"step_{self._step_count:03d}_coarse.png")
@@ -589,6 +665,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                         t_inference_coarse, t_action, t_step_total, coarse_usage),
                     "image_path": coarse_path,
                     "mode": "grid2level_coarse",
+                    "screen_diff": round(screen_diff, 4),
+                    "stall_count": self._stall_count,
                 },
             )
 
@@ -695,6 +773,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 "image_path": coarse_path,
                 "mode": "grid2level_fine",
                 "zoom_area": zoom_area,
+                "screen_diff": round(screen_diff, 4),
+                "stall_count": self._stall_count,
             },
         )
 
@@ -832,6 +912,34 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         t_screenshot = time.perf_counter() - t0
         pixels = state.pixels  # numpy array (H, W, 3)
         img = Image.fromarray(pixels).convert("RGB")
+
+        # 1b. screen-change detection
+        screen_diff = _compute_screen_diff(self._prev_screenshot, img)
+        if screen_diff < self._screen_change_threshold:
+            self._stall_count += 1
+        else:
+            self._stall_count = 0
+        self._max_stall_count = max(self._max_stall_count, self._stall_count)
+        self._prev_screenshot = img.copy()
+        print(f"  [screen-diff] diff={screen_diff:.4f}  stall_count={self._stall_count}")
+
+        if (self._stall_action == "terminate"
+                and self._stall_count >= self._max_stall_steps):
+            print(f"  [screen-stall] Terminating: screen unchanged for "
+                  f"{self._stall_count} steps (threshold={self._screen_change_threshold})")
+            return base_agent.AgentInteractionResult(
+                done=False,
+                data={
+                    "step": self._step_count,
+                    "action": {"action": "stall_terminated"},
+                    "screen_diff": round(screen_diff, 4),
+                    "stall_count": self._stall_count,
+                    "stall_terminated": True,
+                    "latency": self._build_latency_dict(
+                        t_screenshot, 0, 0, 0, 0,
+                        time.perf_counter() - t_step_start, {}),
+                },
+            )
 
         # 2. observation: element mode or grid mode
         t0 = time.perf_counter()
@@ -1002,6 +1110,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 "image_path": image_path,
                 "mode": self.agent_mode,
                 "n_elements": len(self._elem_list),
+                "screen_diff": round(screen_diff, 4),
+                "stall_count": self._stall_count,
             },
         )
 
