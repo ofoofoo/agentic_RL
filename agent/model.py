@@ -29,6 +29,8 @@ class GeminiModel:
         image_path: str = None,
         history: list[dict] = None,
         examples: list[dict] = None,
+        temperature: float | None = None,
+        enable_thinking: bool = False,
     ) -> tuple[str, dict]:
         """
         Send a prompt to Gemini and return (text, usage) where
@@ -69,9 +71,13 @@ class GeminiModel:
         if image_path is not None:
             parts.append(_image_part_gemini(image_path))
 
+        gen_config = {}
+        if temperature is not None:
+            gen_config["temperature"] = temperature
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=parts,
+            config=types.GenerateContentConfig(**gen_config) if gen_config else None,
         )
 
         usage = {}
@@ -96,7 +102,7 @@ class VLLMModel:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model_name = model_name
 
-    def generate(self, prompt: str, image_path: str = None, history: list[dict] = None, examples: list[dict] = None) -> tuple[str, dict]:
+    def generate(self, prompt: str, image_path: str = None, history: list[dict] = None, examples: list[dict] = None, temperature: float | None = None, enable_thinking: bool = False) -> tuple[str, dict]:
         """
         Returns (text, usage) where usage includes:
           prompt_tokens, completion_tokens, total_tokens,
@@ -136,13 +142,16 @@ class VLLMModel:
         messages.append({"role": "user", "content": content})
 
         t_request_start = _time.perf_counter()
-        stream = self.client.chat.completions.create(
+        kwargs = dict(
             model=self.model_name,
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
         )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        stream = self.client.chat.completions.create(**kwargs)
 
         full_text = ""
         t_first_token: float | None = None

@@ -347,7 +347,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self.thinking_mode = config.get("THINKING_MODE", False)
         
         self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
-        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H)
+        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
         self.grid_prompt = build_grid_prompt(
             SCREEN_W, SCREEN_H, CELL_W, CELL_H, thinking_mode=self.thinking_mode
         )
@@ -517,11 +517,11 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         max_steps = self._max_steps or 25
         return (
+            f"{stall_text}"
             f"{sys_prompt}\n\n"
             f"Task: {goal}\n\n"
             f"{elem_text}"
             f"{history_text}"
-            f"{stall_text}"
             f"Current step: {self._step_count + 1} / {max_steps}\n"
             f"What is the next action?"
         )
@@ -600,10 +600,19 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         coarse_prompt = self._build_prompt(goal, is_coarse=True)
         t_prompt = time.perf_counter() - t0
 
+        stall_temperature = None
+        stall_thinking = False
+        if self._stall_action == "escalate" and self._stall_count >= 1:
+            stall_temperature = min(0.3 + 0.2 * self._stall_count, 1.0)
+            stall_thinking = self._stall_count >= 2
+            print(f"  [stall-escalation] temp={stall_temperature:.1f}  thinking={stall_thinking}")
+
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
         coarse_raw, coarse_usage = self.model.generate(
-            coarse_prompt, image_path=coarse_path, history=history_window)
+            coarse_prompt, image_path=coarse_path, history=history_window,
+            temperature=stall_temperature, enable_thinking=stall_thinking,
+        )
         t_inference_coarse = time.perf_counter() - t0
 
         coarse_annotated = _annotate_thinking(coarse_img, coarse_raw)
@@ -985,10 +994,20 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         prompt = self._build_prompt(goal)
         t_prompt = time.perf_counter() - t0
 
-        # 4. inference
+        # 4. inference (with stall escalation)
+        stall_temperature = None
+        stall_thinking = False
+        if self._stall_action == "escalate" and self._stall_count >= 1:
+            stall_temperature = min(0.3 + 0.2 * self._stall_count, 1.0)
+            stall_thinking = self._stall_count >= 2
+            print(f"  [stall-escalation] temp={stall_temperature:.1f}  thinking={stall_thinking}")
+
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
-        raw_response, token_usage = self.model.generate(prompt, image_path=image_path, history=history_window)
+        raw_response, token_usage = self.model.generate(
+            prompt, image_path=image_path, history=history_window,
+            temperature=stall_temperature, enable_thinking=stall_thinking,
+        )
         t_inference = time.perf_counter() - t0
 
         img_annotated = _annotate_thinking(mode_img, raw_response)

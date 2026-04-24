@@ -289,7 +289,7 @@ class Agent:
             prev_screenshot = curr_screenshot
             print(f"[step {step + 1}] screen-diff={screen_diff:.4f}  stall_count={stall_count}")
 
-            if (self._stall_action == "terminate"
+            if (self._stall_action in ("terminate", "escalate")
                     and stall_count >= self._max_stall_steps):
                 print(f"\n[agent] Terminating: screen unchanged for "
                       f"{stall_count} steps (threshold={self._screen_change_threshold})")
@@ -316,9 +316,19 @@ class Agent:
             # ── Prompt ───────────────────────────────────────────────────
             prompt = self._build_prompt(task, step, history, grid_on, elem_list, stall_count=stall_count)
 
-            # ── Inference ────────────────────────────────────────────────
+            # ── Inference (with stall escalation) ─────────────────────────
+            stall_temperature = None
+            stall_thinking = False
+            if self._stall_action == "escalate" and stall_count >= 1:
+                stall_temperature = min(0.3 + 0.2 * stall_count, 1.0)
+                stall_thinking = stall_count >= 2
+                print(f"[step {step + 1}] stall-escalation: temp={stall_temperature:.1f}  thinking={stall_thinking}")
+
             t0 = time.perf_counter()
-            raw_response = self.model.generate(prompt, image_path=image_path)
+            raw_response = self.model.generate(
+                prompt, image_path=image_path,
+                temperature=stall_temperature, enable_thinking=stall_thinking,
+            )
             t_inference = time.perf_counter() - t0
             print(f"[step {step + 1}] Model response ({t_inference:.2f}s):\n{raw_response}")
 
