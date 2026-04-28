@@ -345,8 +345,13 @@ class Agent:
                 enable_thinking=stall_thinking,
             )
             if isinstance(self.model, DynamicLoRAVLLMModel):
+                history_summary = ""
+                if history:
+                    lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(history)]
+                    history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
                 generate_kwargs["pass1_prompt"] = (
                     f"Task: {task}\n\n"
+                    f"{history_summary}"
                     "Look at the screenshot of an Android phone. "
                     "Think carefully about what the next action should be to accomplish the task."
                 )

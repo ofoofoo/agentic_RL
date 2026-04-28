@@ -630,8 +630,13 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             enable_thinking=stall_thinking,
         )
         if isinstance(self.model, DynamicLoRAVLLMModel):
+            history_summary = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
+                history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
             coarse_kwargs["pass1_prompt"] = (
                 f"Task: {goal}\n\n"
+                f"{history_summary}"
                 "Look at the screenshot of an Android phone. "
                 "Think carefully about what the next action should be to accomplish the task."
             )
@@ -1034,14 +1039,20 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             enable_thinking=stall_thinking,
         )
         if isinstance(self.model, DynamicLoRAVLLMModel):
-            # Pass 1 gets only the task + screenshot — NO formatting contract, NO
-            # "MUST follow this exact format" instructions.  If Pass 1 sees the full
-            # agent prompt it will put the action inside <think> instead of reasoning,
-            # breaking Pass 2.
+            # Pass 1 gets only the task + history summary + screenshot — NO formatting
+            # contract, NO "MUST follow this exact format" instructions.  If Pass 1 sees
+            # the full agent prompt it will put the action inside <think> instead of
+            # reasoning, breaking Pass 2.
+            history_summary = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
+                history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
             generate_kwargs["pass1_prompt"] = (
                 f"Task: {goal}\n\n"
-                "Look at the screenshot of an Android phone. "
-                "Think carefully about what the next action should be to accomplish the task."
+                f"{history_summary}"
+                "Look at the screenshot of an Android phone. You are an intelligent assistant."
+                "Describe what you see on the current screen and what you think the next action should be."
+                "Think carefully about what the next action should be to accomplish the task. Output only your reasoning and be concise, in 1-2 sentences."
             )
         raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
