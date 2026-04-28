@@ -45,8 +45,10 @@ def main():
              "Leave empty to run all tasks.",
     )
     parser.add_argument(
-        "--backend", type=str, default="gemini", choices=["gemini", "vllm"],
-        help="Model backend to use.",
+        "--backend", type=str, default="gemini",
+        choices=["gemini", "vllm", "vllm_dynamic_lora"],
+        help="Model backend to use. `vllm_dynamic_lora` runs the 2-pass dynamic-LoRA "
+             "pipeline: base model generates <think>...</think>, LoRA generates the action.",
     )
     parser.add_argument(
         "--agent_mode", type=str, default="element", choices=["element", "raw", "grid", "grid2level"],

@@ -1,4 +1,4 @@
-import json, base64, os, time as _time
+import json, base64, os, re, time as _time
 from pathlib import Path
 import google.genai as genai
 import google.genai.types as types
@@ -97,6 +97,44 @@ class GeminiModel:
         return response.text, usage
 
 
+def _build_vllm_messages(
+    prompt: str,
+    image_path: str | None,
+    history: list[dict] | None,
+    examples: list[dict] | None,
+) -> list[dict]:
+    """Construct the OpenAI-style multimodal messages list shared by all vLLM models."""
+    messages: list[dict] = []
+
+    if examples:
+        for i, ex in enumerate(examples, 1):
+            messages.append({"role": "user", "content": [
+                {"type": "text", "text": f"=== EXAMPLE {i} ===\nTask: {ex['task']}"},
+                _image_content(ex["screenshot"]),
+            ]})
+            messages.append({"role": "assistant", "content": _format_action(ex)})
+        messages.append({"role": "user", "content": "=== YOUR TURN ==="})
+
+    if history:
+        history_content = [{"type": "text", "text": "History of previous steps:"}]
+        for i, h in enumerate(history):
+            history_content.append({"type": "text", "text": f"Step {i + 1}:"})
+            img_p = h.get("image_path")
+            if img_p and os.path.exists(img_p):
+                history_content.append(_image_content(img_p))
+            summary = h.get("summary", "")
+            if summary:
+                history_content.append({"type": "text", "text": f"Action taken: {summary}"})
+        messages.append({"role": "user", "content": history_content})
+
+    content = [{"type": "text", "text": prompt}]
+    if image_path:
+        content.append(_image_content(image_path))
+    messages.append({"role": "user", "content": content})
+
+    return messages
+
+
 class VLLMModel:
     def __init__(self, api_key: str, model_name: str, base_url: str = "http://127.0.0.1:8000/v1"):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -110,36 +148,7 @@ class VLLMModel:
           decode_s (time from first token to last token),
           tpot_s  (decode_s / completion_tokens, i.e. per-output-token latency)
         """
-        messages = []
-
-        # ICL examples
-        if examples:
-            for i, ex in enumerate(examples, 1):
-                messages.append({"role": "user", "content": [
-                    {"type": "text", "text": f"=== EXAMPLE {i} ===\nTask: {ex['task']}"},
-                    _image_content(ex["screenshot"]),
-                ]})
-                messages.append({"role": "assistant", "content": _format_action(ex)})
-            messages.append({"role": "user", "content": "=== YOUR TURN ==="})
-
-        # History
-        if history:
-            history_content = [{"type": "text", "text": "History of previous steps:"}]
-            for i, h in enumerate(history):
-                history_content.append({"type": "text", "text": f"Step {i + 1}:"})
-                img_p = h.get("image_path")
-                if img_p and os.path.exists(img_p):
-                    history_content.append(_image_content(img_p))
-                summary = h.get("summary", "")
-                if summary:
-                    history_content.append({"type": "text", "text": f"Action taken: {summary}"})
-            messages.append({"role": "user", "content": history_content})
-
-        # Current step
-        content = [{"type": "text", "text": prompt}]
-        if image_path:
-            content.append(_image_content(image_path))
-        messages.append({"role": "user", "content": content})
+        messages = _build_vllm_messages(prompt, image_path, history, examples)
 
         t_request_start = _time.perf_counter()
         kwargs = dict(
@@ -185,3 +194,174 @@ class VLLMModel:
         }
 
         return full_text, usage
+
+
+class DynamicLoRAVLLMModel:
+    """
+    Two-pass "dynamic LoRA" inference against a single vLLM server that exposes
+    both the base model and a LoRA adapter (started with --enable-lora --lora-modules).
+
+    Pass 1 (reasoning):
+        - target = `base_model` (no LoRA), `enable_thinking=True`
+        - stops at `</think>` so the base model only emits the reasoning body
+        - this is the original Qwen3-VL's "pure" thinking trace
+    Pass 2 (action):
+        - target = `lora_model` (LoRA adapter), `enable_thinking=False`
+        - assistant prefill = the exact `<think>...</think>\n` block from pass 1,
+          carried via vLLM's `continue_final_message=True`
+        - LoRA continues directly into the trained action format
+
+    Returned `text` is the concatenation `<think>\n{trace}\n</think>\n{action}`,
+    so downstream parsers (which strip leading think blocks) see a normal action.
+
+    Both passes hit the same vLLM server and share the same prompt prefix, so vLLM's
+    prefix cache amortises the (expensive) ViT encode + prompt prefill across them.
+    """
+
+    DEFAULT_THINK_MAX_TOKENS = 512
+    DEFAULT_ACTION_MAX_TOKENS = 256
+
+    def __init__(
+        self,
+        api_key: str,
+        base_model: str,
+        lora_model: str,
+        base_url: str = "http://127.0.0.1:8000/v1",
+        think_max_tokens: int | None = None,
+        action_max_tokens: int | None = None,
+    ):
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.base_model = base_model
+        self.lora_model = lora_model
+        self.think_max_tokens = think_max_tokens or self.DEFAULT_THINK_MAX_TOKENS
+        self.action_max_tokens = action_max_tokens or self.DEFAULT_ACTION_MAX_TOKENS
+
+    @staticmethod
+    def _strip_think_wrapper(text: str) -> str:
+        """If pass-1 emitted its own <think>...</think> wrapper, drop it; we re-wrap ourselves."""
+        text = text.strip()
+        text = re.sub(r"^<think>\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*</think>\s*$", "", text, flags=re.IGNORECASE)
+        return text.strip()
+
+    def _stream(self, kwargs: dict) -> tuple[str, dict]:
+        """Run a streaming chat completion and collect (text, usage_dict)."""
+        t_request_start = _time.perf_counter()
+        stream = self.client.chat.completions.create(**kwargs)
+
+        full_text = ""
+        t_first_token: float | None = None
+        usage_data = None
+
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                if t_first_token is None:
+                    t_first_token = _time.perf_counter()
+                full_text += chunk.choices[0].delta.content
+            if hasattr(chunk, "usage") and chunk.usage is not None:
+                usage_data = chunk.usage
+
+        t_end = _time.perf_counter()
+        ttft = (t_first_token - t_request_start) if t_first_token else 0.0
+        decode_s = (t_end - t_first_token) if t_first_token else 0.0
+
+        prompt_tokens = getattr(usage_data, "prompt_tokens", 0) or 0 if usage_data else 0
+        completion_tokens = getattr(usage_data, "completion_tokens", 0) or 0 if usage_data else 0
+        tpot = (decode_s / completion_tokens) if completion_tokens > 0 else 0.0
+
+        return full_text, {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "ttft_s": ttft,
+            "decode_s": decode_s,
+            "tpot_s": tpot,
+        }
+
+    def generate(
+        self,
+        prompt: str,
+        image_path: str | None = None,
+        history: list[dict] | None = None,
+        examples: list[dict] | None = None,
+        temperature: float | None = None,
+        enable_thinking: bool = False,  # accepted for API parity; ignored (this model is always 2-pass)
+    ) -> tuple[str, dict]:
+        del enable_thinking  # always two-pass: pass 1 thinks, pass 2 acts
+        messages = _build_vllm_messages(prompt, image_path, history, examples)
+
+        # ── Pass 1: reasoning trace from the base model ──────────────
+        pass1_kwargs = dict(
+            model=self.base_model,
+            messages=messages,
+            stream=True,
+            stream_options={"include_usage": True},
+            max_tokens=self.think_max_tokens,
+            stop=["</think>"],
+            extra_body={
+                # Force the qwen3-vl chat template to insert the opening <think> tag
+                # (so the model emits only the reasoning body, which we wrap below).
+                "chat_template_kwargs": {"enable_thinking": True},
+            },
+        )
+        if temperature is not None:
+            pass1_kwargs["temperature"] = temperature
+        thinking_body, p1_usage = self._stream(pass1_kwargs)
+        thinking_body = self._strip_think_wrapper(thinking_body)
+
+        # ── Pass 2: action from the LoRA adapter, with the trace prefilled ──
+        prefill = f"<think>\n{thinking_body}\n</think>\n"
+        pass2_messages = messages + [{"role": "assistant", "content": prefill}]
+
+        pass2_kwargs = dict(
+            model=self.lora_model,
+            messages=pass2_messages,
+            stream=True,
+            stream_options={"include_usage": True},
+            max_tokens=self.action_max_tokens,
+            extra_body={
+                # `continue_final_message=True` makes vLLM treat the last assistant
+                # message as a literal prefix and have the model decode from there
+                # (no `<|im_end|>` is appended; no generation prompt is added).
+                "continue_final_message": True,
+                "add_generation_prompt": False,
+                # `enable_thinking=True` keeps the qwen3-vl reasoning-template logic
+                # from stripping the <think>...</think> block we just prefilled.
+                "chat_template_kwargs": {"enable_thinking": True},
+            },
+        )
+        if temperature is not None:
+            pass2_kwargs["temperature"] = temperature
+        action_text, p2_usage = self._stream(pass2_kwargs)
+
+        full_text = f"{prefill}{action_text}"
+        usage = self._merge_usage(p1_usage, p2_usage)
+        return full_text, usage
+
+    @staticmethod
+    def _merge_usage(p1: dict, p2: dict) -> dict:
+        prompt_tokens = p1["prompt_tokens"] + p2["prompt_tokens"]
+        completion_tokens = p1["completion_tokens"] + p2["completion_tokens"]
+        total_tokens = prompt_tokens + completion_tokens
+        # TTFT is dominated by pass-1 prefill (first user-visible latency before any token).
+        # decode time is the sum of both passes' decode windows.
+        ttft_s = p1["ttft_s"]
+        decode_s = p1["decode_s"] + p2["decode_s"]
+        tpot_s = (decode_s / completion_tokens) if completion_tokens > 0 else 0.0
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "ttft_s": round(ttft_s, 4),
+            "decode_s": round(decode_s, 4),
+            "tpot_s": round(tpot_s, 4),
+            # extra split-out fields for visibility into the 2-pass breakdown
+            "pass1_prompt_tokens": p1["prompt_tokens"],
+            "pass1_completion_tokens": p1["completion_tokens"],
+            "pass1_ttft_s": round(p1["ttft_s"], 4),
+            "pass1_decode_s": round(p1["decode_s"], 4),
+            "pass2_prompt_tokens": p2["prompt_tokens"],
+            "pass2_completion_tokens": p2["completion_tokens"],
+            "pass2_ttft_s": round(p2["ttft_s"], 4),
+            "pass2_decode_s": round(p2["decode_s"], 4),
+        }

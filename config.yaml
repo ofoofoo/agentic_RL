@@ -16,6 +16,17 @@ VLLM_MODEL: "Qwen/Qwen3-VL-8B-Instruct"
 #VLLM_MODEL: "/homes/orionf/LlamaFactory/saves/qwen3-vl-8b/multiturn_no_complete/aitw_no_google_sft/" # l2 GPU 0
 VLLM_BASE_URL: "http://127.0.0.1:8000/v1"
 
+# ── Dynamic-LoRA backend ───────────────────────────────────────────────
+# Used only when --backend=vllm_dynamic_lora.
+# BASE_MODEL is the served base (no LoRA), used by Pass 1 to produce the
+# <think>...</think> trace. LORA_MODEL is the served LoRA-adapter alias
+# (the name on the left of `--lora-modules NAME=PATH` in start_server.sh),
+# used by Pass 2 to generate the final action with the trace prefilled.
+BASE_MODEL: "Qwen/Qwen3-VL-8B-Instruct"
+LORA_MODEL: "action_lora"
+THINK_MAX_TOKENS: 512    # cap on Pass 1 reasoning length (stops at </think>)
+ACTION_MAX_TOKENS: 256   # cap on Pass 2 action length
+
 # Screen-stall detection: detect when the screen hasn't changed between steps
 SCREEN_CHANGE_THRESHOLD: 0.02  # mean pixel diff below this = "unchanged" (0.0–1.0)
 MAX_STALL_STEPS: 5             # hard terminate after this many consecutive stalled steps

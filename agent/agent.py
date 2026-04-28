@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from .android_controller import AndroidController, UIElement
-from .model import GeminiModel, VLLMModel
+from .model import DynamicLoRAVLLMModel, GeminiModel, VLLMModel
 from .prompt import (
     build_element_prompt,
     build_grid_prompt,
@@ -28,7 +28,21 @@ from .parse import parse_element_response, parse_grid_response
 class Agent:
     def __init__(self, config: dict):
         backend = config.get("BACKEND").lower()
-        if backend == "vllm":
+        if backend == "vllm_dynamic_lora":
+            base_url = config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
+            self.model = DynamicLoRAVLLMModel(
+                api_key=config["VLLM_API_KEY"],
+                base_model=config["BASE_MODEL"],
+                lora_model=config["LORA_MODEL"],
+                base_url=base_url,
+                think_max_tokens=config.get("THINK_MAX_TOKENS"),
+                action_max_tokens=config.get("ACTION_MAX_TOKENS"),
+            )
+            print(
+                f"[agent] Backend: vLLM dynamic-LoRA — "
+                f"base={config['BASE_MODEL']!r}  lora={config['LORA_MODEL']!r} @ {base_url}"
+            )
+        elif backend == "vllm":
             self.model = VLLMModel(
                 api_key=config["VLLM_API_KEY"],
                 model_name=config["VLLM_MODEL"],
