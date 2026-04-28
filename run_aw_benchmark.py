@@ -23,8 +23,8 @@ from agent.model import GeminiModel, VLLMModel
 def check_with_oracle(oracle_model, goal: str, image_path: str) -> bool:
     prompt = (
         f"Task Goal: {goal}\n\n"
-        "Look at the provided Android screenshot. Has this goal been successfully achieved? "
-        "Explain your reasoning first and then:"
+        "Look at the provided Android screenshot. Has this goal been successfully achieved?"
+        "Give a short one sentence explanation and then:"
         "Answer strictly with YES or NO."
     )
     try:

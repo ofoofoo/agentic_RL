@@ -3,13 +3,21 @@ import re
 def _extract(rsp: str, key: str) -> str:
     """Extract a single header field value, returning '' if not found."""
     m = re.findall(rf"{key}:\s*(.*?)$", rsp, re.MULTILINE)
-    return m[0] if m else ""
+    if m:
+        return m[0]
+    if key == "Thought":
+        think_match = re.search(r"<think>(.*?)</think>", rsp, flags=re.DOTALL)
+        if think_match:
+            return think_match.group(1).strip()
+    return ""
 
 
 def _extract_action(rsp: str) -> str:
     """Extract Action field, falling back to the full response strip."""
     m = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)
-    return m[0] if m else rsp.strip()
+    if m:
+        return m[0]
+    return re.sub(r"<think>.*?</think>", "", rsp, flags=re.DOTALL).strip()
 
 
 def parse_response(mode: str, rsp: str) -> dict | None:

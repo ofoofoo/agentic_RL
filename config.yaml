@@ -9,18 +9,24 @@ COARSE_GRID_COLS: 4
 FINE_GRID_ROWS: 8
 FINE_GRID_COLS: 6
 
-VLLM_MODEL: "Qwen/Qwen3-VL-8B-Instruct"
 # Set to true when using a Qwen3-VL model fine-tuned with <think> traces (TF or rejection sampling).
 # This passes enable_thinking=True to vLLM's chat_template_kwargs so the /no_think token is NOT injected.
 # Do NOT also use --thinking_mode flag; that changes the system prompt to Obs/Thought/Action format.
 ENABLE_THINKING_TOKENS: true
+LLAMAFACTORY_PREFIX: "/homes/orionf/LlamaFactory/saves"
+
+#VLLM_MODEL: "Qwen/Qwen3-VL-8B-Instruct" # l27 GPU 0
 #VLLM_MODEL: "/homes/orionf/LlamaFactory/saves/qwen3-vl-8b/full/aitw_no_google_sft"
 #VLLM_MODEL: "/homes/orionf/LlamaFactory/saves/qwen3-vl-8b/full/aitw_grid_no_google_sft"
 #VLLM_MODEL: "/homes/orionf/LlamaFactory/saves/qwen3-vl-8b/multiturn/aitw_no_google_sft/checkpoint-11000/"
 #VLLM_MODEL: "/homes/orionf/LlamaFactory/saves/qwen3-vl-8b/multiturn_no_complete/aitw_no_google_sft/" # l2 GPU 0
+VLLM_MODEL: "/homes/orionf/LlamaFactory/saves/qwen3-vl-8b/merged/aitw_reasoning_tf_100"
 VLLM_BASE_URL: "http://127.0.0.1:8000/v1"
 
 # Screen-stall detection: detect when the screen hasn't changed between steps
 SCREEN_CHANGE_THRESHOLD: 0.02  # mean pixel diff below this = "unchanged" (0.0–1.0)
 MAX_STALL_STEPS: 5             # hard terminate after this many consecutive stalled steps
 STALL_ACTION: "escalate"    # "escalate" = nudge + ramp temp + enable thinking, "terminate" = immediate kill, "nudge" = text only
+
+
+
