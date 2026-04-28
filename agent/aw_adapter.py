@@ -15,7 +15,7 @@ from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
 from .parse import parse_element_response, parse_grid_response, parse_response
-from .model import GeminiModel, VLLMModel
+from .model import GeminiModel, VLLMModel, DynamicLoRAVLLMModel
 from .prompt import (
     build_element_prompt,
     build_grid_prompt,
@@ -332,11 +332,24 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         backend = config.get("BACKEND", "gemini").lower()
         if backend == "vllm":
-            self.model = VLLMModel(
+            base_model = VLLMModel(
                 api_key=config["VLLM_API_KEY"],
                 model_name=config["VLLM_MODEL"],
                 base_url=config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             )
+            lora_model = (config.get("VLLM_LORA_MODEL") or "").strip()
+            if lora_model:
+                self.model = DynamicLoRAVLLMModel(base=base_model, lora_model_name=lora_model)
+                print(
+                    f"[aw_adapter] vLLM dynamic LoRA enabled: base={config['VLLM_MODEL']} lora={lora_model} "
+                    f"@ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}"
+                )
+            else:
+                self.model = base_model
+                print(
+                    f"[aw_adapter] vLLM base-only: {config['VLLM_MODEL']} "
+                    f"@ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}"
+                )
         else:
             self.model = GeminiModel(
                 api_key=config["GEMINI_API_KEY"],
@@ -1011,6 +1024,12 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             enable_thinking=self._enable_thinking_tokens or stall_thinking,
         )
         t_inference = time.perf_counter() - t0
+
+        if token_usage.get("dynamic_lora"):
+            print(
+                f"  [dynamic-lora] pass1(base)={token_usage.get('pass1_model')}  "
+                f"pass2(lora)={token_usage.get('pass2_model')}"
+            )
 
         img_annotated = _annotate_thinking(mode_img, raw_response)
         img_annotated.save(image_path)

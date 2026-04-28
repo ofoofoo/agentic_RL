@@ -269,5 +269,8 @@ class DynamicLoRAVLLMModel:
             "ttft_s": (usage1.get("ttft_s", 0.0) + usage2.get("ttft_s", 0.0)),
             "decode_s": (usage1.get("decode_s", 0.0) + usage2.get("decode_s", 0.0)),
             "tpot_s": 0.0,
+            "dynamic_lora": True,
+            "pass1_model": self.base.model_name,
+            "pass2_model": self.lora_model_name,
         }
         return (think_text + "\n" + action_text).strip(), usage
