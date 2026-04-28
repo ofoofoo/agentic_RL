@@ -112,6 +112,7 @@ class VLLMModel:
         enable_thinking: bool = False,
         stop: list[str] | None = None,
         model_override: str | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[str, dict]:
         """
         Returns (text, usage) where usage includes:
@@ -163,6 +164,8 @@ class VLLMModel:
             kwargs["temperature"] = temperature
         if stop:
             kwargs["stop"] = stop
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         stream = self.client.chat.completions.create(**kwargs)
 
         full_text = ""
@@ -222,10 +225,28 @@ class DynamicLoRAVLLMModel:
         temperature: float | None = None,
         enable_thinking: bool = False,
     ) -> tuple[str, dict]:
+        import re
+
+        def _rewrite_for_pass1_think(p: str) -> str:
+            """
+            The raw-mode system prompt often forces 'Action:' only.
+            For pass 1 we rewrite that instruction to allow a think trace.
+            """
+            if "Your response MUST follow this exact format:" not in p:
+                return p
+            # Replace the strict Action-only contract with a think-only contract.
+            p = re.sub(
+                r"Your response MUST follow this exact format:\s*\n\s*Action:.*?\n\n",
+                "Your response MUST follow this exact format:\n  <think>...</think>\n\n",
+                p,
+                flags=re.DOTALL,
+            )
+            return p
+
         # Pass 1: base-only thinking.
         # Make this robust by *forcing* the generation to begin inside a <think> block:
         # we end the prompt with "<think>\n" and stop at "</think>".
-        prompt1 = f"{prompt}\n\n<think>\n"
+        prompt1 = _rewrite_for_pass1_think(prompt) + "\n\n<think>\n"
 
         # Stop right before </think> is emitted (stop token is not included).
         pass1_raw, usage1 = self.base.generate(
@@ -236,10 +257,13 @@ class DynamicLoRAVLLMModel:
             temperature=temperature,
             enable_thinking=True,
             stop=["</think>"],
+            max_tokens=256,
         )
 
         # Pass 1 output is the INSIDE of the think block (because prompt already included "<think>\n").
         think_inner = (pass1_raw or "").strip()
+        # If the base still tried to emit "Action:" inside think, drop it.
+        think_inner = re.sub(r"(?im)^\s*Action:\s*.*$", "", think_inner).strip()
         think_text = f"<think>\n{think_inner}\n</think>" if think_inner else ""
 
         # Match the original SFT format where action follows immediately after the thinking trace.
@@ -265,9 +289,15 @@ class DynamicLoRAVLLMModel:
             temperature=temperature,
             enable_thinking=False,
             model_override=self.lora_model_name,
-            stop=["\n"],
+            stop=["\n", "<think>", "Observation:", "Thought:"],
+            max_tokens=32,
         )
-        action_text = pass2_raw
+        action_text = (pass2_raw or "").strip()
+        # If LoRA starts a think block anyway, strip it.
+        action_text = re.sub(r"(?is)<think>.*$", "", action_text).strip()
+        # Ensure we return an Action line (parser expects it in raw mode).
+        if action_text and not re.match(r"(?i)^Action:\s*", action_text):
+            action_text = "Action: " + action_text
 
         usage = {
             "prompt_tokens": usage1.get("prompt_tokens", 0) + usage2.get("prompt_tokens", 0),
