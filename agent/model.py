@@ -222,12 +222,10 @@ class DynamicLoRAVLLMModel:
         temperature: float | None = None,
         enable_thinking: bool = False,
     ) -> tuple[str, dict]:
-        # Pass 1: base-only thinking. In raw mode, the system prompt often says "output only Action:",
-        # so we add a lightweight, pass-1-only suffix to elicit a <think> block.
-        prompt1 = (
-            f"{prompt}\n\n"
-            "Before deciding the next action, write your reasoning inside <think>...</think> and output nothing else."
-        )
+        # Pass 1: base-only thinking.
+        # Make this robust by *forcing* the generation to begin inside a <think> block:
+        # we end the prompt with "<think>\n" and stop at "</think>".
+        prompt1 = f"{prompt}\n\n<think>\n"
 
         # Stop right before </think> is emitted (stop token is not included).
         pass1_raw, usage1 = self.base.generate(
@@ -240,24 +238,25 @@ class DynamicLoRAVLLMModel:
             stop=["</think>"],
         )
 
-        # Extract ONLY the <think>...</think> block from pass 1.
-        # (The base model can sometimes emit an Action line despite instructions; we ignore it here.)
-        import re
-        think_text = ""
-        m = re.search(r"<think>.*?</think>", pass1_raw, flags=re.DOTALL)
-        if m:
-            think_text = m.group(0).strip()
-        elif "<think>" in pass1_raw:
-            # If the stop sequence cut off </think>, close it.
-            think_text = pass1_raw[pass1_raw.find("<think>") :].strip() + "\n</think>"
+        # Pass 1 output is the INSIDE of the think block (because prompt already included "<think>\n").
+        think_inner = (pass1_raw or "").strip()
+        think_text = f"<think>\n{think_inner}\n</think>" if think_inner else ""
 
         # Match the original SFT format where action follows immediately after the thinking trace.
         think_prefix = (think_text.rstrip() + "\n") if think_text else ""
 
         # Pass 2: LoRA generates a direct continuation (action) after </think>.
         # This is closer to the training distribution than adding new meta-instructions.
-        # Encourage strict action-only output.
-        prompt2 = f"{prompt}\n\n{think_prefix}Action:"
+        # Pass 2: LoRA action-only.
+        # We explicitly forbid <think> here and stop at the first newline so it outputs ONE line.
+        prompt2 = (
+            f"{prompt}\n\n"
+            f"{think_prefix}"
+            "Respond with exactly one line in the format:\n"
+            "Action: <single action call>\n"
+            "Do not output <think>.\n"
+            "Action: "
+        )
         pass2_raw, usage2 = self.base.generate(
             prompt=prompt2,
             image_path=image_path,
@@ -266,6 +265,7 @@ class DynamicLoRAVLLMModel:
             temperature=temperature,
             enable_thinking=False,
             model_override=self.lora_model_name,
+            stop=["\n"],
         )
         action_text = pass2_raw
 
