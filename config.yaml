@@ -33,7 +33,7 @@ VLLM_BASE_URL: "http://127.0.0.1:8000/v1"
 # Screen-stall detection: detect when the screen hasn't changed between steps
 SCREEN_CHANGE_THRESHOLD: 0.02  # mean pixel diff below this = "unchanged" (0.0–1.0)
 MAX_STALL_STEPS: 5             # hard terminate after this many consecutive stalled steps
-STALL_ACTION: "escalate"    # "escalate" = nudge + ramp temp + enable thinking, "terminate" = immediate kill, "nudge" = text only
+STALL_ACTION: "ignore"    # "escalate" = nudge + ramp temp + enable thinking, "terminate" = immediate kill, "nudge" = text only, "ignore" = do nothing
 
 
 

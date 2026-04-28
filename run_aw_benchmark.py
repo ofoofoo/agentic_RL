@@ -97,8 +97,8 @@ def main():
         help="Number of consecutive stalled steps before nudging/terminating (overrides MAX_STALL_STEPS in config.yaml).",
     )
     parser.add_argument(
-        "--stall_action", type=str, default=None, choices=["nudge", "terminate", "escalate"],
-        help="Action on screen stall: 'escalate' = ramp temp + thinking, 'nudge' = text warning, 'terminate' = kill run (overrides STALL_ACTION in config.yaml).",
+        "--stall_action", type=str, default=None, choices=["nudge", "terminate", "escalate", "ignore"],
+        help="Action on screen stall: 'escalate' = ramp temp + thinking, 'nudge' = text warning, 'terminate' = kill run, 'ignore' = do nothing (overrides STALL_ACTION in config.yaml).",
     )
     parser.add_argument(
         "--stall_threshold", type=float, default=None,

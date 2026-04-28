@@ -506,9 +506,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         elem_text = ""
         if not is_coarse and self.agent_mode == "element" and self._elem_list:
             elem_text = build_element_text_list(self._elem_list) + "\n\n"
-
         stall_text = ""
-        if self._stall_count > 0:
+        if self._stall_action != "ignore" and self._stall_count > 0:
             recent_actions = []
             for h in self._history[-self._stall_count:]:
                 act = h.get("action", {})

@@ -283,9 +283,8 @@ class DynamicLoRAVLLMModel:
             self._strip_action_contract(prompt)
             + "\n\n---\n"
             + "You are writing an internal reasoning trace for a downstream model that will choose the UI action.\n"
-            + "Look at the screenshot and the task. In first person, describe what you see and the next logical step.\n"
-            + "Plain English only. Do NOT write Action:, tap(, swipe(, type(, press_, open(, task_complete, "
-            + "grid numbers, or coordinates. End your reasoning naturally; an external stop will close the tag."
+            + "Look at the screenshot and the task. In first person, describe what you see and the next logical step is to complete the task. Nothing extra over what is needed.\n"
+            + "Plain English only. End your reasoning naturally."
         )
         pass1_raw, usage1 = self.base.generate(
             prompt=prompt1,
