@@ -157,7 +157,7 @@ The screen dimensions are {screen_width}x{screen_height}.
 def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int, thinking_mode: bool = False) -> str:
     """System prompt for grid-overlay mode — fallback when elements aren't labeled."""
     if not thinking_mode:
-        print("Using non-thinking mode")
+        print("Using non-thinking mode (grid)")
         return f"""You are an agent controlling an Android phone. The screen is overlaid with a numbered grid.
 Each grid area is labeled with an integer in the top-left corner.
 

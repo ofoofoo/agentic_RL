@@ -9,7 +9,7 @@ def _image_part_gemini(image_path: str) -> types.Part:
     return types.Part.from_bytes(data=Path(image_path).read_bytes(), mime_type="image/png")
 
 def _image_content(image_path: str) -> dict:
-    img_b64 = base64.b64encode(Path(image_path).read_bytes()).decode() # encode image
+    img_b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
     return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
 
 def _format_action(ex: dict) -> str:
@@ -204,12 +204,22 @@ class VLLMModel:
 
 class DynamicLoRAVLLMModel:
     """
-    Two-pass inference helper for "base-think then LoRA-act" using a single vLLM OpenAI server.
+    Two-pass inference: base model reasons, LoRA model acts.
 
-    Assumptions:
-    - Server is started with --enable-lora and --lora-modules <lora_name>=<lora_path>
-    - You can select the adapter by setting the request "model" to <lora_name>
-      while base requests use the original base model id.
+    Pass 1 (base model — NO action formatting):
+      - A clean "just reason" system prompt is used. The full `prompt` string from
+        _build_prompt() is NOT passed to the base model because it embeds the raw-mode
+        system prompt ("Your response MUST follow this exact format: Action: ..."),
+        which would cause the base model to output an action instead of reasoning.
+      - Only the task line is extracted and passed. The assistant turn is prefilled
+        with "<think>\n"; generation stops at "</think>".
+
+    Pass 2 (LoRA model — exact SFT format):
+      - The original prompt + screenshot are passed (matching training).
+      - The assistant turn is prefilled with the <think>...</think> block from Pass 1.
+      - enable_thinking=True is used so Qwen3's template does NOT auto-insert a
+        "<think>\n\n</think>\n" prefix (which would stop generation immediately).
+      - The LoRA generates "Action: tap(x, y)" as it was trained to do.
     """
 
     def __init__(self, base: VLLMModel, lora_model_name: str):
@@ -227,92 +237,140 @@ class DynamicLoRAVLLMModel:
     ) -> tuple[str, dict]:
         import re
 
-        def _rewrite_for_pass1_think(p: str) -> str:
-            """
-            The raw-mode system prompt often forces 'Action:' only.
-            For pass 1 we rewrite that instruction to allow a think trace.
-            """
-            if "Your response MUST follow this exact format:" not in p:
-                return p
-            # Replace the strict Action-only contract with a think-only contract.
-            p = re.sub(
-                r"Your response MUST follow this exact format:\s*\n\s*Action:.*?\n\n",
-                "Your response MUST follow this exact format:\n  <think>...</think>\n\n",
-                p,
-                flags=re.DOTALL,
-            )
-            return p
+        # ── Pass 1: base model generates a reasoning trace ───────────────────
+        # Extract the task description from the assembled prompt string.
+        # We cannot pass the full prompt because it embeds the raw-mode system
+        # prompt text which causes the base model to emit an action, not reasoning.
+        task_match = re.search(r"Task:\s*(.+?)(?:\n|$)", prompt)
+        task_str   = task_match.group(1).strip() if task_match else prompt.strip()
 
-        # Pass 1: base-only thinking.
-        # Make this robust by *forcing* the generation to begin inside a <think> block:
-        # we end the prompt with "<think>\n" and stop at "</think>".
-        prompt1 = _rewrite_for_pass1_think(prompt) + "\n\n<think>\n"
-
-        # Stop right before </think> is emitted (stop token is not included).
-        pass1_raw, usage1 = self.base.generate(
-            prompt=prompt1,
-            image_path=image_path,
-            history=history,
-            examples=examples,
-            temperature=temperature,
-            enable_thinking=True,
-            stop=["</think>"],
-            max_tokens=256,
+        pass1_system = (
+            "You are a reasoning assistant for Android phone control. "
+            "You will be shown a screenshot and a task. "
+            "Think step-by-step about the current screen state and what single "
+            "action should be taken next to make progress on the task. "
+            "Output ONLY your chain-of-thought reasoning. "
+            "Do NOT output any function call or action."
         )
 
-        # Pass 1 output is the INSIDE of the think block (because prompt already included "<think>\n").
-        think_inner = (pass1_raw or "").strip()
-        # If the base still tried to emit "Action:" inside think, drop it.
-        think_inner = re.sub(r"(?im)^\s*Action:\s*.*$", "", think_inner).strip()
-        think_text = f"<think>\n{think_inner}\n</think>" if think_inner else ""
+        # Only pass the task + screenshot — no action-formatting instructions.
+        pass1_user_content: list[dict] = [{"type": "text", "text": f"Task: {task_str}"}]
+        if image_path:
+            pass1_user_content.append(_image_content(image_path))
 
-        # Match the original SFT format where action follows immediately after the thinking trace.
+        pass1_messages = [
+            {"role": "system",    "content": pass1_system},
+            {"role": "user",      "content": pass1_user_content},
+            # Partial assistant prefill — model continues generating inside <think>
+            {"role": "assistant", "content": "<think>\n"},
+        ]
+
+        t_req1 = _time.perf_counter()
+        stream1 = self.base.client.chat.completions.create(
+            model=self.base.model_name,
+            messages=pass1_messages,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            stop=["</think>"],
+            max_tokens=512,
+            **({"temperature": temperature} if temperature is not None else {}),
+        )
+
+        think_inner = ""
+        t_first1: float | None = None
+        usage1_data = None
+        for chunk in stream1:
+            if chunk.choices and chunk.choices[0].delta.content:
+                if t_first1 is None:
+                    t_first1 = _time.perf_counter()
+                think_inner += chunk.choices[0].delta.content
+            if hasattr(chunk, "usage") and chunk.usage is not None:
+                usage1_data = chunk.usage
+
+        t_end1  = _time.perf_counter()
+        ttft1   = (t_first1 - t_req1) if t_first1 else 0.0
+        decode1 = (t_end1 - t_first1) if t_first1 else 0.0
+        p1_prompt     = getattr(usage1_data, "prompt_tokens",     0) or 0 if usage1_data else 0
+        p1_completion = getattr(usage1_data, "completion_tokens", 0) or 0 if usage1_data else 0
+
+        think_inner = (think_inner or "").strip()
+        think_text  = f"<think>\n{think_inner}\n</think>" if think_inner else ""
+
+        # ── Pass 2: LoRA model generates the action ───────────────────────────
+        # SFT training format per assistant turn:
+        #   <think>\n{reasoning}\n</think>\nAction: tap(x, y)
+        #
+        # We replicate it exactly:
+        #   - user message    : full original prompt + screenshot (same as training)
+        #   - assistant prefill: <think>...</think>\n
+        # The LoRA then continues with "Action: tap(x, y)".
+        #
+        # enable_thinking=True is REQUIRED here: with enable_thinking=False, Qwen3's
+        # chat template auto-injects "<think>\n\n</think>\n" before every generation.
+        # That injected "<think>" token would immediately terminate generation
+        # (or corrupt the output). With enable_thinking=True and our prefill already
+        # containing a complete think block, the model skips straight to Action:.
         think_prefix = (think_text.rstrip() + "\n") if think_text else ""
 
-        # Pass 2: LoRA generates a direct continuation (action) after </think>.
-        # This is closer to the training distribution than adding new meta-instructions.
-        # Pass 2: LoRA action-only.
-        # We explicitly forbid <think> here and stop at the first newline so it outputs ONE line.
-        prompt2 = (
-            f"{prompt}\n\n"
-            f"{think_prefix}"
-            "Respond with exactly one line in the format:\n"
-            "Action: <single action call>\n"
-            "Do not output <think>.\n"
-            "Action: "
+        pass2_user_content: list[dict] = [{"type": "text", "text": prompt}]
+        if image_path:
+            pass2_user_content.append(_image_content(image_path))
+
+        pass2_messages = [
+            {"role": "user",      "content": pass2_user_content},
+            {"role": "assistant", "content": think_prefix},
+        ]
+
+        t_req2 = _time.perf_counter()
+        stream2 = self.base.client.chat.completions.create(
+            model=self.lora_model_name,
+            messages=pass2_messages,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+            stop=["\n"],        # one action line only
+            max_tokens=64,
+            **({"temperature": temperature} if temperature is not None else {}),
         )
-        pass2_raw, usage2 = self.base.generate(
-            prompt=prompt2,
-            image_path=image_path,
-            history=history,
-            examples=examples,
-            temperature=temperature,
-            enable_thinking=False,
-            model_override=self.lora_model_name,
-            stop=["\n", "<think>", "Observation:", "Thought:"],
-            max_tokens=32,
-        )
+
+        pass2_raw = ""
+        t_first2: float | None = None
+        usage2_data = None
+        for chunk in stream2:
+            if chunk.choices and chunk.choices[0].delta.content:
+                if t_first2 is None:
+                    t_first2 = _time.perf_counter()
+                pass2_raw += chunk.choices[0].delta.content
+            if hasattr(chunk, "usage") and chunk.usage is not None:
+                usage2_data = chunk.usage
+
+        t_end2  = _time.perf_counter()
+        ttft2   = (t_first2 - t_req2) if t_first2 else 0.0
+        decode2 = (t_end2 - t_first2) if t_first2 else 0.0
+        p2_prompt     = getattr(usage2_data, "prompt_tokens",     0) or 0 if usage2_data else 0
+        p2_completion = getattr(usage2_data, "completion_tokens", 0) or 0 if usage2_data else 0
+
         action_text = (pass2_raw or "").strip()
-        # If LoRA starts a think block anyway, strip it.
+        # Strip any stray <think> block the LoRA may have opened.
         action_text = re.sub(r"(?is)<think>.*$", "", action_text).strip()
-        # Ensure we return an Action line (parser expects it in raw mode).
+        # Ensure the parser sees an "Action:" prefix.
         if action_text and not re.match(r"(?i)^Action:\s*", action_text):
             action_text = "Action: " + action_text
 
         usage = {
-            "prompt_tokens": usage1.get("prompt_tokens", 0) + usage2.get("prompt_tokens", 0),
-            "completion_tokens": usage1.get("completion_tokens", 0) + usage2.get("completion_tokens", 0),
-            "total_tokens": usage1.get("total_tokens", 0) + usage2.get("total_tokens", 0),
-            "ttft_s": (usage1.get("ttft_s", 0.0) + usage2.get("ttft_s", 0.0)),
-            "decode_s": (usage1.get("decode_s", 0.0) + usage2.get("decode_s", 0.0)),
-            "tpot_s": 0.0,
+            "prompt_tokens":     p1_prompt + p2_prompt,
+            "completion_tokens": p1_completion + p2_completion,
+            "total_tokens":      p1_prompt + p2_prompt + p1_completion + p2_completion,
+            "ttft_s":   round(ttft1 + ttft2, 4),
+            "decode_s": round(decode1 + decode2, 4),
+            "tpot_s":   0.0,
             "dynamic_lora": True,
             "pass1_model": self.base.model_name,
             "pass2_model": self.lora_model_name,
-            "pass1_raw": pass1_raw,
+            "pass1_raw":   f"<think>\n{think_inner}\n</think>",
             "pass1_think": think_text,
-            "pass2_raw": pass2_raw,
+            "pass2_raw":   pass2_raw,
         }
-        # Keep think trace visible (for debugging), then the action output.
         combined = (think_text + "\n" + action_text).strip() if think_text else action_text.strip()
         return combined, usage
