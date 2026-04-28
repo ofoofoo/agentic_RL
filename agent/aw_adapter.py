@@ -345,6 +345,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         self.agent_mode = config.get("AGENT_MODE", "element")
         self.thinking_mode = config.get("THINKING_MODE", False)
+        self._enable_thinking_tokens = config.get("ENABLE_THINKING_TOKENS", False)
         
         self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
         self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
@@ -1006,7 +1007,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
         raw_response, token_usage = self.model.generate(
             prompt, image_path=image_path, history=history_window,
-            temperature=stall_temperature, enable_thinking=stall_thinking,
+            temperature=stall_temperature,
+            enable_thinking=self._enable_thinking_tokens or stall_thinking,
         )
         t_inference = time.perf_counter() - t0
 
