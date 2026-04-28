@@ -230,7 +230,7 @@ class DynamicLoRAVLLMModel:
         )
 
         # Stop right before </think> is emitted (stop token is not included).
-        think_text, usage1 = self.base.generate(
+        pass1_raw, usage1 = self.base.generate(
             prompt=prompt1,
             image_path=image_path,
             history=history,
@@ -240,19 +240,25 @@ class DynamicLoRAVLLMModel:
             stop=["</think>"],
         )
 
-        # Ensure we have a closed think block to feed into pass 2 context.
-        if "<think>" in think_text and "</think>" not in think_text:
-            think_text = think_text + "</think>"
+        # Extract ONLY the <think>...</think> block from pass 1.
+        # (The base model can sometimes emit an Action line despite instructions; we ignore it here.)
+        import re
+        think_text = ""
+        m = re.search(r"<think>.*?</think>", pass1_raw, flags=re.DOTALL)
+        if m:
+            think_text = m.group(0).strip()
+        elif "<think>" in pass1_raw:
+            # If the stop sequence cut off </think>, close it.
+            think_text = pass1_raw[pass1_raw.find("<think>") :].strip() + "\n</think>"
+
         # Match the original SFT format where action follows immediately after the thinking trace.
-        if think_text.rstrip().endswith("</think>"):
-            think_prefix = think_text.rstrip() + "\n"
-        else:
-            think_prefix = think_text.rstrip() + "\n\n"
+        think_prefix = (think_text.rstrip() + "\n") if think_text else ""
 
         # Pass 2: LoRA generates a direct continuation (action) after </think>.
         # This is closer to the training distribution than adding new meta-instructions.
-        prompt2 = f"{prompt}\n\n{think_prefix}"
-        action_text, usage2 = self.base.generate(
+        # Encourage strict action-only output.
+        prompt2 = f"{prompt}\n\n{think_prefix}Action:"
+        pass2_raw, usage2 = self.base.generate(
             prompt=prompt2,
             image_path=image_path,
             history=history,
@@ -261,6 +267,7 @@ class DynamicLoRAVLLMModel:
             enable_thinking=False,
             model_override=self.lora_model_name,
         )
+        action_text = pass2_raw
 
         usage = {
             "prompt_tokens": usage1.get("prompt_tokens", 0) + usage2.get("prompt_tokens", 0),
@@ -272,5 +279,10 @@ class DynamicLoRAVLLMModel:
             "dynamic_lora": True,
             "pass1_model": self.base.model_name,
             "pass2_model": self.lora_model_name,
+            "pass1_raw": pass1_raw,
+            "pass1_think": think_text,
+            "pass2_raw": pass2_raw,
         }
-        return (think_text + "\n" + action_text).strip(), usage
+        # Keep think trace visible (for debugging), then the action output.
+        combined = (think_text + "\n" + action_text).strip() if think_text else action_text.strip()
+        return combined, usage

@@ -1030,6 +1030,22 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 f"  [dynamic-lora] pass1(base)={token_usage.get('pass1_model')}  "
                 f"pass2(lora)={token_usage.get('pass2_model')}"
             )
+            # Pretty-print what each pass produced (colors are for console only).
+            base_think = (token_usage.get("pass1_think") or "").strip()
+            pass2_raw = (token_usage.get("pass2_raw") or "").strip()
+            if base_think:
+                print("\033[90m  [pass1/base think]\033[0m")
+                print("\033[90m" + base_think + "\033[0m")
+            else:
+                # If think extraction failed, show a short hint.
+                p1 = (token_usage.get("pass1_raw") or "").strip()
+                if p1:
+                    snippet = (p1[:500] + "...") if len(p1) > 500 else p1
+                    print("\033[90m  [pass1/base raw (no <think> found)]\033[0m")
+                    print("\033[90m" + snippet + "\033[0m")
+            if pass2_raw:
+                print("\033[92m  [pass2/lora raw]\033[0m")
+                print("\033[92m" + pass2_raw + "\033[0m")
 
         img_annotated = _annotate_thinking(mode_img, raw_response)
         img_annotated.save(image_path)
