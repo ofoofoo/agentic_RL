@@ -339,10 +339,18 @@ class Agent:
                 print(f"[step {step + 1}] stall-escalation: temp={stall_temperature:.1f}  thinking={stall_thinking}")
 
             t0 = time.perf_counter()
-            raw_response = self.model.generate(
-                prompt, image_path=image_path,
-                temperature=stall_temperature, enable_thinking=stall_thinking,
+            generate_kwargs: dict = dict(
+                image_path=image_path,
+                temperature=stall_temperature,
+                enable_thinking=stall_thinking,
             )
+            if isinstance(self.model, DynamicLoRAVLLMModel):
+                generate_kwargs["pass1_prompt"] = (
+                    f"Task: {task}\n\n"
+                    "Look at the screenshot of an Android phone. "
+                    "Think carefully about what the next action should be to accomplish the task."
+                )
+            raw_response, _usage = self.model.generate(prompt, **generate_kwargs)
             t_inference = time.perf_counter() - t0
             print(f"[step {step + 1}] Model response ({t_inference:.2f}s):\n{raw_response}")
 

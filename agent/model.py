@@ -286,32 +286,66 @@ class DynamicLoRAVLLMModel:
         examples: list[dict] | None = None,
         temperature: float | None = None,
         enable_thinking: bool = False,  # accepted for API parity; ignored (this model is always 2-pass)
+        pass1_prompt: str | None = None,
     ) -> tuple[str, dict]:
-        del enable_thinking  # always two-pass: pass 1 thinks, pass 2 acts
-        messages = _build_vllm_messages(prompt, image_path, history, examples)
+        """
+        pass1_prompt: a SHORT, format-free prompt for Pass 1 — e.g. just
+            "Task: <goal>\\n\\nWhat should happen next on this screen?"
+            This is critical: if Pass 1 receives the full formatted agent prompt
+            (with "Your response MUST follow this exact format: <action call>")
+            the base model puts the action inside <think> instead of reasoning,
+            which completely breaks Pass 2.
 
-        # ── Pass 1: reasoning trace from the base model ──────────────
+            When None, falls back to the full `prompt` (suboptimal but won't crash).
+        """
+        del enable_thinking  # always two-pass: pass 1 thinks, pass 2 acts
+
+        # Pass 2 gets the full formatted agent prompt (matches LoRA training distribution)
+        pass2_base_messages = _build_vllm_messages(prompt, image_path, history, examples)
+
+        # Pass 1 gets a minimal prompt: just the task + screenshot, no format rules
+        if pass1_prompt is not None:
+            p1_content: list[dict] = [{"type": "text", "text": pass1_prompt}]
+            if image_path:
+                p1_content.append(_image_content(image_path))
+            pass1_messages = [{"role": "user", "content": p1_content}]
+        else:
+            # Fallback: use the same messages as Pass 2 (suboptimal)
+            pass1_messages = pass2_base_messages
+
+        # ── Pass 1: base model generates the reasoning trace ─────────
+        # The qwen3-vl chat template inserts `<think>\n` before the assistant
+        # generation starts (enable_thinking=True).  We stop at </think> so we
+        # only capture the reasoning body — the model never emits an action here.
         pass1_kwargs = dict(
             model=self.base_model,
-            messages=messages,
+            messages=pass1_messages,
             stream=True,
             stream_options={"include_usage": True},
             max_tokens=self.think_max_tokens,
             stop=["</think>"],
-            extra_body={
-                # Force the qwen3-vl chat template to insert the opening <think> tag
-                # (so the model emits only the reasoning body, which we wrap below).
-                "chat_template_kwargs": {"enable_thinking": True},
-            },
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
         if temperature is not None:
             pass1_kwargs["temperature"] = temperature
         thinking_body, p1_usage = self._stream(pass1_kwargs)
         thinking_body = self._strip_think_wrapper(thinking_body)
 
-        # ── Pass 2: action from the LoRA adapter, with the trace prefilled ──
+        print(
+            f"\033[36m[PASS1/BASE  <think>]\033[0m\n"
+            f"\033[36m{thinking_body}\033[0m"
+        )
+
+        # ── Pass 2: LoRA generates the action with the trace prefilled ─
+        # We pass the completed <think>...</think>\n block as the start of the
+        # assistant turn.  `continue_final_message=True` tells vLLM to NOT close
+        # the turn with <|im_end|> — the model decodes directly after </think>\n.
+        #
+        # IMPORTANT: use enable_thinking=False so the template does NOT prepend
+        # another <think>\n before our prefill content (that would double the tag
+        # and send the LoRA into a reasoning loop).
         prefill = f"<think>\n{thinking_body}\n</think>\n"
-        pass2_messages = messages + [{"role": "assistant", "content": prefill}]
+        pass2_messages = pass2_base_messages + [{"role": "assistant", "content": prefill}]
 
         pass2_kwargs = dict(
             model=self.lora_model,
@@ -320,19 +354,22 @@ class DynamicLoRAVLLMModel:
             stream_options={"include_usage": True},
             max_tokens=self.action_max_tokens,
             extra_body={
-                # `continue_final_message=True` makes vLLM treat the last assistant
-                # message as a literal prefix and have the model decode from there
-                # (no `<|im_end|>` is appended; no generation prompt is added).
                 "continue_final_message": True,
                 "add_generation_prompt": False,
-                # `enable_thinking=True` keeps the qwen3-vl reasoning-template logic
-                # from stripping the <think>...</think> block we just prefilled.
-                "chat_template_kwargs": {"enable_thinking": True},
+                # The <think>...</think> block is already in our prefill content;
+                # telling the template enable_thinking=False prevents it from
+                # prepending a second <think> tag.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         )
         if temperature is not None:
             pass2_kwargs["temperature"] = temperature
         action_text, p2_usage = self._stream(pass2_kwargs)
+
+        print(
+            f"\033[32m[PASS2/LORA  action]\033[0m\n"
+            f"\033[32m{action_text}\033[0m"
+        )
 
         full_text = f"{prefill}{action_text}"
         usage = self._merge_usage(p1_usage, p2_usage)

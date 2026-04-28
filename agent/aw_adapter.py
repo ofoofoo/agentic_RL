@@ -623,10 +623,19 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
-        coarse_raw, coarse_usage = self.model.generate(
-            coarse_prompt, image_path=coarse_path, history=history_window,
-            temperature=stall_temperature, enable_thinking=stall_thinking,
+        coarse_kwargs: dict = dict(
+            image_path=coarse_path,
+            history=history_window,
+            temperature=stall_temperature,
+            enable_thinking=stall_thinking,
         )
+        if isinstance(self.model, DynamicLoRAVLLMModel):
+            coarse_kwargs["pass1_prompt"] = (
+                f"Task: {goal}\n\n"
+                "Look at the screenshot of an Android phone. "
+                "Think carefully about what the next action should be to accomplish the task."
+            )
+        coarse_raw, coarse_usage = self.model.generate(coarse_prompt, **coarse_kwargs)
         t_inference_coarse = time.perf_counter() - t0
 
         coarse_annotated = _annotate_thinking(coarse_img, coarse_raw)
@@ -1018,10 +1027,23 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
-        raw_response, token_usage = self.model.generate(
-            prompt, image_path=image_path, history=history_window,
-            temperature=stall_temperature, enable_thinking=stall_thinking,
+        generate_kwargs: dict = dict(
+            image_path=image_path,
+            history=history_window,
+            temperature=stall_temperature,
+            enable_thinking=stall_thinking,
         )
+        if isinstance(self.model, DynamicLoRAVLLMModel):
+            # Pass 1 gets only the task + screenshot — NO formatting contract, NO
+            # "MUST follow this exact format" instructions.  If Pass 1 sees the full
+            # agent prompt it will put the action inside <think> instead of reasoning,
+            # breaking Pass 2.
+            generate_kwargs["pass1_prompt"] = (
+                f"Task: {goal}\n\n"
+                "Look at the screenshot of an Android phone. "
+                "Think carefully about what the next action should be to accomplish the task."
+            )
+        raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
 
         img_annotated = _annotate_thinking(mode_img, raw_response)
