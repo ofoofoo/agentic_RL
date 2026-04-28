@@ -102,7 +102,17 @@ class VLLMModel:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model_name = model_name
 
-    def generate(self, prompt: str, image_path: str = None, history: list[dict] = None, examples: list[dict] = None, temperature: float | None = None, enable_thinking: bool = False) -> tuple[str, dict]:
+    def generate(
+        self,
+        prompt: str,
+        image_path: str = None,
+        history: list[dict] = None,
+        examples: list[dict] = None,
+        temperature: float | None = None,
+        enable_thinking: bool = False,
+        stop: list[str] | None = None,
+        model_override: str | None = None,
+    ) -> tuple[str, dict]:
         """
         Returns (text, usage) where usage includes:
           prompt_tokens, completion_tokens, total_tokens,
@@ -143,7 +153,7 @@ class VLLMModel:
 
         t_request_start = _time.perf_counter()
         kwargs = dict(
-            model=self.model_name,
+            model=(model_override or self.model_name),
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
@@ -151,6 +161,8 @@ class VLLMModel:
         )
         if temperature is not None:
             kwargs["temperature"] = temperature
+        if stop:
+            kwargs["stop"] = stop
         stream = self.client.chat.completions.create(**kwargs)
 
         full_text = ""
@@ -185,3 +197,70 @@ class VLLMModel:
         }
 
         return full_text, usage
+
+
+class DynamicLoRAVLLMModel:
+    """
+    Two-pass inference helper for "base-think then LoRA-act" using a single vLLM OpenAI server.
+
+    Assumptions:
+    - Server is started with --enable-lora and --lora-modules <lora_name>=<lora_path>
+    - You can select the adapter by setting the request "model" to <lora_name>
+      while base requests use the original base model id.
+    """
+
+    def __init__(self, base: VLLMModel, lora_model_name: str):
+        self.base = base
+        self.lora_model_name = lora_model_name
+
+    def generate(
+        self,
+        prompt: str,
+        image_path: str = None,
+        history: list[dict] = None,
+        examples: list[dict] = None,
+        temperature: float | None = None,
+        enable_thinking: bool = False,
+    ) -> tuple[str, dict]:
+        # Pass 1: force thinking; stop right before </think> is emitted (stop token is not included).
+        think_text, usage1 = self.base.generate(
+            prompt=prompt,
+            image_path=image_path,
+            history=history,
+            examples=examples,
+            temperature=temperature,
+            enable_thinking=True,
+            stop=["</think>"],
+        )
+
+        # Ensure we have a closed think block to feed into pass 2 context.
+        if "<think>" in think_text and "</think>" not in think_text:
+            think_text = think_text + "</think>"
+        # Match the original SFT format where action follows immediately after the thinking trace.
+        if think_text.rstrip().endswith("</think>"):
+            think_prefix = think_text.rstrip() + "\n"
+        else:
+            think_prefix = think_text.rstrip() + "\n\n"
+
+        # Pass 2: LoRA generates a direct continuation (action) after </think>.
+        # This is closer to the training distribution than adding new meta-instructions.
+        prompt2 = f"{prompt}\n\n{think_prefix}"
+        action_text, usage2 = self.base.generate(
+            prompt=prompt2,
+            image_path=image_path,
+            history=history,
+            examples=examples,
+            temperature=temperature,
+            enable_thinking=False,
+            model_override=self.lora_model_name,
+        )
+
+        usage = {
+            "prompt_tokens": usage1.get("prompt_tokens", 0) + usage2.get("prompt_tokens", 0),
+            "completion_tokens": usage1.get("completion_tokens", 0) + usage2.get("completion_tokens", 0),
+            "total_tokens": usage1.get("total_tokens", 0) + usage2.get("total_tokens", 0),
+            "ttft_s": (usage1.get("ttft_s", 0.0) + usage2.get("ttft_s", 0.0)),
+            "decode_s": (usage1.get("decode_s", 0.0) + usage2.get("decode_s", 0.0)),
+            "tpot_s": 0.0,
+        }
+        return (think_text + "\n" + action_text).strip(), usage

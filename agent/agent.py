@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from .android_controller import AndroidController, UIElement
-from .model import GeminiModel, VLLMModel
+from .model import GeminiModel, VLLMModel, DynamicLoRAVLLMModel
 from .prompt import (
     build_element_prompt,
     build_grid_prompt,
@@ -29,12 +29,24 @@ class Agent:
     def __init__(self, config: dict):
         backend = config.get("BACKEND").lower()
         if backend == "vllm":
-            self.model = VLLMModel(
+            base_model = VLLMModel(
                 api_key=config["VLLM_API_KEY"],
                 model_name=config["VLLM_MODEL"],
                 base_url=config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             )
-            print(f"[agent] Backend: vLLM — {config['VLLM_MODEL']} @ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}")
+            lora_model = (config.get("VLLM_LORA_MODEL") or "").strip()
+            if lora_model:
+                self.model = DynamicLoRAVLLMModel(base=base_model, lora_model_name=lora_model)
+                print(
+                    f"[agent] Backend: vLLM (dynamic LoRA) — base={config['VLLM_MODEL']} lora={lora_model} "
+                    f"@ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}"
+                )
+            else:
+                self.model = base_model
+                print(
+                    f"[agent] Backend: vLLM — {config['VLLM_MODEL']} "
+                    f"@ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}"
+                )
         else:
             self.model = GeminiModel(
                 api_key=config["GEMINI_API_KEY"],
