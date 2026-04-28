@@ -222,9 +222,16 @@ class DynamicLoRAVLLMModel:
         temperature: float | None = None,
         enable_thinking: bool = False,
     ) -> tuple[str, dict]:
-        # Pass 1: force thinking; stop right before </think> is emitted (stop token is not included).
+        # Pass 1: base-only thinking. In raw mode, the system prompt often says "output only Action:",
+        # so we add a lightweight, pass-1-only suffix to elicit a <think> block.
+        prompt1 = (
+            f"{prompt}\n\n"
+            "Before deciding the next action, write your reasoning inside <think>...</think> and output nothing else."
+        )
+
+        # Stop right before </think> is emitted (stop token is not included).
         think_text, usage1 = self.base.generate(
-            prompt=prompt,
+            prompt=prompt1,
             image_path=image_path,
             history=history,
             examples=examples,
