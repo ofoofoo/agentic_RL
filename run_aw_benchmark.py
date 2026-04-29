@@ -23,8 +23,8 @@ from agent.model import GeminiModel, VLLMModel
 def check_with_oracle(oracle_model, goal: str, image_path: str) -> bool:
     prompt = (
         f"Task Goal: {goal}\n\n"
-        "Look at the provided Android screenshot. Has this goal been successfully achieved?"
-        "Give a short one sentence explanation and then:"
+        "Look at the provided Android screenshot. Has this goal been successfully achieved? "
+        "Explain your reasoning first and then:"
         "Answer strictly with YES or NO."
     )
     try:
@@ -45,8 +45,10 @@ def main():
              "Leave empty to run all tasks.",
     )
     parser.add_argument(
-        "--backend", type=str, default="gemini", choices=["gemini", "vllm"],
-        help="Model backend to use.",
+        "--backend", type=str, default="gemini",
+        choices=["gemini", "vllm", "vllm_dynamic_lora"],
+        help="Model backend to use. `vllm_dynamic_lora` runs the 2-pass dynamic-LoRA "
+             "pipeline: base model generates <think>...</think>, LoRA generates the action.",
     )
     parser.add_argument(
         "--agent_mode", type=str, default="element", choices=["element", "raw", "grid", "grid2level"],
@@ -97,8 +99,8 @@ def main():
         help="Number of consecutive stalled steps before nudging/terminating (overrides MAX_STALL_STEPS in config.yaml).",
     )
     parser.add_argument(
-        "--stall_action", type=str, default=None, choices=["nudge", "terminate", "escalate", "ignore"],
-        help="Action on screen stall: 'escalate' = ramp temp + thinking, 'nudge' = text warning, 'terminate' = kill run, 'ignore' = do nothing (overrides STALL_ACTION in config.yaml).",
+        "--stall_action", type=str, default=None, choices=["nudge", "terminate", "escalate"],
+        help="Action on screen stall: 'escalate' = ramp temp + thinking, 'nudge' = text warning, 'terminate' = kill run (overrides STALL_ACTION in config.yaml).",
     )
     parser.add_argument(
         "--stall_threshold", type=float, default=None,

@@ -15,7 +15,7 @@ from android_world.env import json_action, adb_utils, tools
 
 from .android_controller import UIElement, _traverse_tree, MIN_DIST
 from .parse import parse_element_response, parse_grid_response, parse_response
-from .model import GeminiModel, VLLMModel, DynamicLoRAVLLMModel
+from .model import DynamicLoRAVLLMModel, GeminiModel, VLLMModel
 from .prompt import (
     build_element_prompt,
     build_grid_prompt,
@@ -331,25 +331,26 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         super().__init__(env=env, name="agentic_rl", transition_pause=transition_pause)
 
         backend = config.get("BACKEND", "gemini").lower()
-        if backend == "vllm":
-            base_model = VLLMModel(
+        if backend == "vllm_dynamic_lora":
+            base_url = config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
+            self.model = DynamicLoRAVLLMModel(
+                api_key=config["VLLM_API_KEY"],
+                base_model=config["BASE_MODEL"],
+                lora_model=config["LORA_MODEL"],
+                base_url=base_url,
+                think_max_tokens=config.get("THINK_MAX_TOKENS"),
+                action_max_tokens=config.get("ACTION_MAX_TOKENS"),
+            )
+            print(
+                f"[aw_adapter] Backend: vLLM dynamic-LoRA — "
+                f"base={config['BASE_MODEL']!r}  lora={config['LORA_MODEL']!r} @ {base_url}"
+            )
+        elif backend == "vllm":
+            self.model = VLLMModel(
                 api_key=config["VLLM_API_KEY"],
                 model_name=config["VLLM_MODEL"],
                 base_url=config.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             )
-            lora_model = (config.get("VLLM_LORA_MODEL") or "").strip()
-            if lora_model:
-                self.model = DynamicLoRAVLLMModel(base=base_model, lora_model_name=lora_model)
-                print(
-                    f"[aw_adapter] vLLM dynamic LoRA enabled: base={config['VLLM_MODEL']} lora={lora_model} "
-                    f"@ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}"
-                )
-            else:
-                self.model = base_model
-                print(
-                    f"[aw_adapter] vLLM base-only: {config['VLLM_MODEL']} "
-                    f"@ {config.get('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1')}"
-                )
         else:
             self.model = GeminiModel(
                 api_key=config["GEMINI_API_KEY"],
@@ -358,7 +359,6 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         self.agent_mode = config.get("AGENT_MODE", "element")
         self.thinking_mode = config.get("THINKING_MODE", False)
-        self._enable_thinking_tokens = config.get("ENABLE_THINKING_TOKENS", False)
         
         self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
         self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
@@ -506,8 +506,9 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         elem_text = ""
         if not is_coarse and self.agent_mode == "element" and self._elem_list:
             elem_text = build_element_text_list(self._elem_list) + "\n\n"
+
         stall_text = ""
-        if self._stall_action != "ignore" and self._stall_count > 0:
+        if self._stall_count > 0:
             recent_actions = []
             for h in self._history[-self._stall_count:]:
                 act = h.get("action", {})
@@ -622,10 +623,24 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
-        coarse_raw, coarse_usage = self.model.generate(
-            coarse_prompt, image_path=coarse_path, history=history_window,
-            temperature=stall_temperature, enable_thinking=stall_thinking,
+        coarse_kwargs: dict = dict(
+            image_path=coarse_path,
+            history=history_window,
+            temperature=stall_temperature,
+            enable_thinking=stall_thinking,
         )
+        if isinstance(self.model, DynamicLoRAVLLMModel):
+            history_summary = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
+                history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            coarse_kwargs["pass1_prompt"] = (
+                f"Task: {goal}\n\n"
+                f"{history_summary}"
+                "Look at the screenshot of an Android phone. "
+                "Think carefully about what the next action should be to accomplish the task."
+            )
+        coarse_raw, coarse_usage = self.model.generate(coarse_prompt, **coarse_kwargs)
         t_inference_coarse = time.perf_counter() - t0
 
         coarse_annotated = _annotate_thinking(coarse_img, coarse_raw)
@@ -1017,34 +1032,31 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         t0 = time.perf_counter()
         history_window = self._history[-self.max_history_steps:] if self.max_history_steps > 0 else []
-        raw_response, token_usage = self.model.generate(
-            prompt, image_path=image_path, history=history_window,
+        generate_kwargs: dict = dict(
+            image_path=image_path,
+            history=history_window,
             temperature=stall_temperature,
-            enable_thinking=self._enable_thinking_tokens or stall_thinking,
+            enable_thinking=stall_thinking,
         )
-        t_inference = time.perf_counter() - t0
-
-        if token_usage.get("dynamic_lora"):
-            print(
-                f"  [dynamic-lora] pass1(base)={token_usage.get('pass1_model')}  "
-                f"pass2(lora)={token_usage.get('pass2_model')}"
+        if isinstance(self.model, DynamicLoRAVLLMModel):
+            # Pass 1 gets only the task + history summary + screenshot — NO formatting
+            # contract, NO "MUST follow this exact format" instructions.  If Pass 1 sees
+            # the full agent prompt it will put the action inside <think> instead of
+            # reasoning, breaking Pass 2.
+            history_summary = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
+                history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            generate_kwargs["pass1_prompt"] = (
+                f"Task: {goal}\n\n"
+                f"{history_summary}"
+                "Look at the screenshot of an Android phone. You are an intelligent assistant."
+                "Describe what you see on the current screen and what you think the next action should be to complete the task"
+                "Think step by step and output only your reasoning and be concise, in 2-3 sentences."
+                "If the task is completed, please make note of this in the reasoning."
             )
-            # Pretty-print what each pass produced (colors are for console only).
-            base_think = (token_usage.get("pass1_think") or "").strip()
-            pass2_raw = (token_usage.get("pass2_raw") or "").strip()
-            if base_think:
-                print("\033[90m  [pass1/base think]\033[0m")
-                print("\033[90m" + base_think + "\033[0m")
-            else:
-                # If think extraction failed, show a short hint.
-                p1 = (token_usage.get("pass1_raw") or "").strip()
-                if p1:
-                    snippet = (p1[:500] + "...") if len(p1) > 500 else p1
-                    print("\033[90m  [pass1/base raw (no <think> found)]\033[0m")
-                    print("\033[90m" + snippet + "\033[0m")
-            if pass2_raw:
-                print("\033[92m  [pass2/lora raw]\033[0m")
-                print("\033[92m" + pass2_raw + "\033[0m")
+        raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
+        t_inference = time.perf_counter() - t0
 
         img_annotated = _annotate_thinking(mode_img, raw_response)
         img_annotated.save(image_path)

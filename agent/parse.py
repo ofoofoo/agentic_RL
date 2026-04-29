@@ -1,23 +1,40 @@
 import re
 
+# Matches a <think>...</think> block (greedy across newlines) at the start of a response,
+# tolerant of leading whitespace and either Unix or Windows line endings.
+_THINK_BLOCK_RE = re.compile(
+    r"^\s*<think\b[^>]*>.*?</think>\s*", flags=re.IGNORECASE | re.DOTALL
+)
+
+
+def _strip_leading_think(rsp: str) -> str:
+    """
+    Drop a leading <think>...</think> block from the response (used by the dynamic-LoRA
+    2-pass model, which returns `<think>...</think>\\n{action}`).
+
+    The thinking trace is captured separately by parsers as `thought` via _extract;
+    here we just want the action string downstream.
+    """
+    return _THINK_BLOCK_RE.sub("", rsp, count=1)
+
+
+def _extract_thought_block(rsp: str) -> str:
+    """Return the body of the leading <think>...</think> block, or '' if there is none."""
+    m = re.match(r"^\s*<think\b[^>]*>(.*?)</think>", rsp, flags=re.IGNORECASE | re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
 def _extract(rsp: str, key: str) -> str:
     """Extract a single header field value, returning '' if not found."""
     m = re.findall(rf"{key}:\s*(.*?)$", rsp, re.MULTILINE)
-    if m:
-        return m[0]
-    if key == "Thought":
-        think_match = re.search(r"<think>(.*?)</think>", rsp, flags=re.DOTALL)
-        if think_match:
-            return think_match.group(1).strip()
-    return ""
+    return m[0] if m else ""
 
 
 def _extract_action(rsp: str) -> str:
     """Extract Action field, falling back to the full response strip."""
+    rsp = _strip_leading_think(rsp)
     m = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)
-    if m:
-        return m[0]
-    return re.sub(r"<think>.*?</think>", "", rsp, flags=re.DOTALL).strip()
+    return m[0] if m else rsp.strip()
 
 
 def parse_response(mode: str, rsp: str) -> dict | None:
@@ -37,7 +54,7 @@ def parse_element_response(rsp: str) -> dict | None:
     or None if unparseable.
     """
     observation = _extract(rsp, "Observation")
-    thought     = _extract(rsp, "Thought")
+    thought     = _extract(rsp, "Thought") or _extract_thought_block(rsp)
     summary     = _extract(rsp, "Summary")
     act_str     = _extract_action(rsp)
 
@@ -57,7 +74,7 @@ def parse_element_response(rsp: str) -> dict | None:
 def parse_grid_response(rsp: str) -> dict | None:
     """Same as parse_element_response but for grid-mode actions."""
     observation = _extract(rsp, "Observation")
-    thought     = _extract(rsp, "Thought")
+    thought     = _extract(rsp, "Thought") or _extract_thought_block(rsp)
     summary     = _extract(rsp, "Summary")
     act_str     = _extract_action(rsp)
 
@@ -77,7 +94,7 @@ def parse_grid_response(rsp: str) -> dict | None:
 def parse_raw_response(rsp: str) -> dict | None:
     """Same as parse_element_response but for raw normalized coordinates."""
     observation = _extract(rsp, "Observation")
-    thought     = _extract(rsp, "Thought")
+    thought     = _extract(rsp, "Thought") or _extract_thought_block(rsp)
     summary     = _extract(rsp, "Summary")
     act_str     = _extract_action(rsp)
 

@@ -157,7 +157,7 @@ The screen dimensions are {screen_width}x{screen_height}.
 def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int, thinking_mode: bool = False) -> str:
     """System prompt for grid-overlay mode — fallback when elements aren't labeled."""
     if not thinking_mode:
-        print("Using non-thinking mode (grid)")
+        print("Using non-thinking mode")
         return f"""You are an agent controlling an Android phone. The screen is overlaid with a numbered grid.
 Each grid area is labeled with an integer in the top-left corner.
 
@@ -290,7 +290,7 @@ def build_raw_prompt(screen_width: int, screen_height: int, thinking_mode: bool 
         return f"""You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
 
 Your response MUST follow this exact format:
-  Action: <The function call with correct parameters, OR task_complete() if done>
+  <The function call with correct parameters, OR task_complete() if done>
 
 Available actions:
 
@@ -318,9 +318,6 @@ Available actions:
 
   task_complete()
     Output this when the task has been successfully completed.
-
-  task_impossible()
-    Output this when the task cannot be completed.
 
 The screen dimensions are {screen_width}x{screen_height} pixels."""
 
