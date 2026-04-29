@@ -1052,7 +1052,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 f"{history_summary}"
                 "Look at the screenshot of an Android phone. You are an intelligent assistant."
                 "Describe what you see on the current screen and what you think the next action should be."
-                "Think carefully about what the next action should be to accomplish the task. Output only your reasoning and be concise, in 1-2 sentences."
+                "Think carefully about what the next action should be to accomplish the task. Output only your reasoning and be concise, in 2-3 sentences."
+                "If the task is completed, please make note of this in the reasoning."
             )
         raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
