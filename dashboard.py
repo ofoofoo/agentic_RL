@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 # ---------------------------------------------------------------------------
 # Config
@@ -396,6 +396,101 @@ def api_ablation_table():
     return JSONResponse(rows)
 
 
+@app.get("/api/steps/{run_id}/{task_name}")
+def api_steps(run_id: str, task_name: str, combo: int = 0):
+    """Return step images and (if available) parsed actions for a task."""
+    task_dir_name = f"{task_name}_combo{combo}"
+    task_dir = None
+    for base in BASE_DIRS:
+        candidate = os.path.join(base, run_id, task_dir_name)
+        if os.path.isdir(candidate):
+            task_dir = candidate
+            break
+    if task_dir is None:
+        return JSONResponse({"steps": []})
+
+    images = sorted(f for f in os.listdir(task_dir) if f.endswith(".png"))
+    step_map: dict[int, dict] = {}
+    for img in images:
+        m = re.match(r"step_(\d+)(?:_(coarse|fine))?\.png", img)
+        if not m:
+            continue
+        step_num = int(m.group(1))
+        variant = m.group(2) or "main"
+        if step_num not in step_map:
+            step_map[step_num] = {"step": step_num, "images": {}}
+        step_map[step_num]["images"][variant] = f"/api/img/{run_id}/{task_dir_name}/{img}"
+
+    actions = _parse_actions_from_log(run_id, task_name)
+
+    steps = []
+    for step_num in sorted(step_map):
+        entry = step_map[step_num]
+        if step_num in actions:
+            entry.update(actions[step_num])
+        steps.append(entry)
+    return JSONResponse({"steps": steps})
+
+
+def _parse_actions_from_log(run_id: str, task_name: str) -> dict[int, dict]:
+    """Best-effort parse of Observation/Thought/Action/Summary per step from
+    the benchmark log that matches this run_id."""
+    log_name = BENCHMARK_LOG_MAP.get(run_id)
+    if not log_name:
+        return {}
+    log_path = os.path.join(LOG_DIR, f"{log_name}.log")
+    if not os.path.isfile(log_path):
+        return {}
+    try:
+        with open(log_path) as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+
+    start = clean.find(f"[{task_name}]")
+    if start < 0:
+        return {}
+    next_task = clean.find("\n[", start + len(task_name) + 10)
+    while next_task > 0:
+        after = clean[next_task + 2: next_task + 80]
+        if re.match(r"[A-Z][A-Za-z]", after) and "] (combo" in after:
+            break
+        next_task = clean.find("\n[", next_task + 2)
+    section = clean[start:next_task] if next_task > 0 else clean[start:]
+
+    result: dict[int, dict] = {}
+    step_pat = re.compile(r"=+\[step (\d+)\].*?=+")
+    parts = step_pat.split(section)
+    for i in range(1, len(parts) - 1, 2):
+        step_num = int(parts[i])
+        block = parts[i + 1]
+        info: dict[str, str] = {}
+        for field in ("Observation", "Thought", "Action", "Summary"):
+            m = re.search(rf"^{field}:\s*(.+?)(?=\n(?:Observation|Thought|Action|Summary|  \[)|$)",
+                          block, re.MULTILINE | re.DOTALL)
+            if m:
+                info[field.lower()] = m.group(1).strip()
+        diff_m = re.search(r"diff=([\d.]+)\s+stall_count=(\d+)", block)
+        if diff_m:
+            info["screen_diff"] = float(diff_m.group(1))
+            info["stall_count"] = int(diff_m.group(2))
+        result[step_num] = info
+    return result
+
+
+@app.get("/api/img/{run_id}/{task_dir}/{filename}")
+def api_img(run_id: str, task_dir: str, filename: str):
+    """Serve a step screenshot image."""
+    if ".." in filename or "/" in filename:
+        return JSONResponse({"error": "invalid"}, status_code=400)
+    for base in BASE_DIRS:
+        path = os.path.join(base, run_id, task_dir, filename)
+        if os.path.isfile(path):
+            return FileResponse(path, media_type="image/png")
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return DASHBOARD_HTML
@@ -458,6 +553,26 @@ tr:hover td{background:rgba(37,99,235,.06)}
 .acc-bar{display:inline-block;height:16px;border-radius:3px;min-width:2px;vertical-align:middle}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
 .row-highlight td{background:rgba(22,163,74,.06)}
+
+.step-viewer{padding:16px 10px;background:var(--bg);border-bottom:2px solid var(--border)}
+.step-viewer .steps-scroll{display:flex;gap:16px;overflow-x:auto;padding-bottom:12px}
+.step-card{flex:0 0 280px;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.step-card img{width:280px;height:auto;display:block;cursor:pointer}
+.step-card .step-info{padding:8px 10px;font-size:12px}
+.step-card .step-num{font-weight:700;color:var(--accent);margin-bottom:4px}
+.step-card .step-action{color:var(--text);font-family:'SF Mono',Consolas,monospace;font-size:11px;background:var(--bg);padding:4px 6px;border-radius:4px;margin:4px 0;word-break:break-all}
+.step-card .step-summary{color:var(--text2);font-size:11px;line-height:1.4}
+.step-card .step-meta{color:var(--text2);font-size:10px;margin-top:4px}
+.step-card .stall-badge{color:#dc2626;font-weight:600}
+.step-viewer .close-btn{float:right;background:none;border:1px solid var(--border);color:var(--text2);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px}
+.step-viewer .close-btn:hover{background:var(--border)}
+.step-viewer .viewer-title{font-weight:600;font-size:14px;margin-bottom:10px}
+
+.lightbox{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);z-index:100;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+.lightbox img{max-width:95vw;max-height:95vh;border-radius:8px}
+
+tr.expandable{cursor:pointer}
+tr.expandable:hover td:first-child{text-decoration:underline}
 
 @media(max-width:900px){.charts{grid-template-columns:1fr}}
 </style>
@@ -722,15 +837,15 @@ function renderTable() {
     });
   }
   const tbody = document.getElementById('task-tbody');
-  tbody.innerHTML = tasks.map(t => {
+  tbody.innerHTML = tasks.map((t,i) => {
     const bg = COLORS[t.failure_class]||'#64748b';
     const pt = t.token_totals?.prompt_tokens??0;
     const ct = t.token_totals?.completion_tokens??0;
     const inf = t.latency_avg?.inference_s?.toFixed(2)??'-';
     const st = t.latency_avg?.step_total_s?.toFixed(2)??'-';
-    return `<tr>
+    return `<tr class="expandable" data-task="${t.task}" data-combo="${t.combo||0}">
       <td>${t.task}</td>
-      <td>${t.success?'<span style="color:#22c55e">&#10003;</span>':'<span style="color:#ef4444">&#10007;</span>'}</td>
+      <td>${t.success?'<span style="color:#16a34a">&#10003;</span>':'<span style="color:#dc2626">&#10007;</span>'}</td>
       <td><span class="badge" style="background:${bg}">${t.failure_label}</span></td>
       <td class="num">${t.steps}</td>
       <td class="num">${t.max_stall_count??'-'}</td>
@@ -741,6 +856,83 @@ function renderTable() {
       <td class="num">${st}</td>
     </tr>`;
   }).join('');
+
+  tbody.querySelectorAll('tr.expandable').forEach(tr => {
+    tr.addEventListener('click', () => toggleStepViewer(tr));
+  });
+}
+
+// ---- Step viewer ----
+let openViewerRow = null;
+
+async function toggleStepViewer(tr) {
+  const existing = tr.nextElementSibling;
+  if (existing && existing.classList.contains('step-viewer-row')) {
+    existing.remove();
+    openViewerRow = null;
+    return;
+  }
+  if (openViewerRow) { openViewerRow.remove(); openViewerRow = null; }
+
+  const task = tr.dataset.task;
+  const combo = tr.dataset.combo || 0;
+  const runId = currentRun.run_id;
+  const res = await fetch(`/api/steps/${runId}/${task}?combo=${combo}`);
+  const data = await res.json();
+
+  if (!data.steps || !data.steps.length) {
+    const noData = document.createElement('tr');
+    noData.className = 'step-viewer-row';
+    noData.innerHTML = `<td colspan="10" class="step-viewer"><em>No step images found for this task.</em></td>`;
+    tr.after(noData);
+    openViewerRow = noData;
+    return;
+  }
+
+  const viewerRow = document.createElement('tr');
+  viewerRow.className = 'step-viewer-row';
+  const td = document.createElement('td');
+  td.colSpan = 10;
+  td.className = 'step-viewer';
+
+  let html = `<button class="close-btn" onclick="this.closest('.step-viewer-row').remove()">Close</button>`;
+  html += `<div class="viewer-title">${task} — ${data.steps.length} steps</div>`;
+  html += `<div class="steps-scroll">`;
+
+  for (const s of data.steps) {
+    const imgUrl = s.images.main || s.images.coarse || Object.values(s.images)[0];
+    const fineUrl = s.images.fine;
+    const action = s.action || '';
+    const summary = s.summary || '';
+    const stall = s.stall_count > 0 ? `<span class="stall-badge">stall ${s.stall_count}</span>` : '';
+    const diff = s.screen_diff !== undefined ? `diff=${s.screen_diff.toFixed(3)}` : '';
+    html += `<div class="step-card">
+      <img src="${imgUrl}" loading="lazy" onclick="showLightbox(this.src)" title="Click to zoom">
+      ${fineUrl ? `<img src="${fineUrl}" loading="lazy" onclick="showLightbox(this.src)" style="border-top:1px solid var(--border)" title="Fine grid view">` : ''}
+      <div class="step-info">
+        <div class="step-num">Step ${s.step} ${stall}</div>
+        ${action ? `<div class="step-action">${escHtml(action)}</div>` : ''}
+        ${summary ? `<div class="step-summary">${escHtml(summary)}</div>` : ''}
+        ${diff ? `<div class="step-meta">${diff}</div>` : ''}
+      </div>
+    </div>`;
+  }
+  html += `</div>`;
+  td.innerHTML = html;
+  viewerRow.appendChild(td);
+  tr.after(viewerRow);
+  openViewerRow = viewerRow;
+  td.querySelector('.steps-scroll').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function showLightbox(src) {
+  const lb = document.createElement('div');
+  lb.className = 'lightbox';
+  lb.innerHTML = `<img src="${src}">`;
+  lb.onclick = () => lb.remove();
+  document.body.appendChild(lb);
 }
 
 function getVal(t, key) {
