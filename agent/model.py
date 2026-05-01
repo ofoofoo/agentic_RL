@@ -323,20 +323,44 @@ class DynamicLoRAVLLMModel:
             stream=True,
             stream_options={"include_usage": True},
             max_tokens=self.think_max_tokens,
-            stop=["</think>"],
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
         if temperature is not None:
             pass1_kwargs["temperature"] = temperature
         thinking_body, p1_usage = self._stream(pass1_kwargs)
-        thinking_body = self._strip_think_wrapper(thinking_body)
+        thinking_body_stripped = self._strip_think_wrapper(thinking_body)
 
         print(
             f"\033[36m[PASS1/BASE  <think>]\033[0m\n"
             f"\033[36m{thinking_body}\033[0m"
         )
 
+        # Parse Is_Coordinate_Action from Pass 1
+        is_coordinate = True # Default to True
+        match = re.search(r"Is_Coordinate_Action:\s*(True|False)", thinking_body, re.IGNORECASE)
+        if match:
+            is_coordinate = match.group(1).lower() == "true"
+        else:
+            # Fallback heuristic
+            if "task_complete" in thinking_body or "press_" in thinking_body:
+                is_coordinate = False
+
+        reasoning_match = re.search(r"Reasoning:\s*(.*?)(?=\nAction:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
+        clean_thinking_body = reasoning_match.group(1).strip() if reasoning_match else thinking_body_stripped
+
+        if not is_coordinate:
+            print("\033[33m[PASS1/BASE] is_coordinate=False, bypassing Pass 2.\033[0m")
+            # Construct a response that matches the expected format (action outside <think> block)
+            action_match = re.search(r"Action:\s*(.*?)(?=\nIs_Coordinate_Action:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
+            action_text = f"Action: {action_match.group(1).strip()}" if action_match else thinking_body_stripped
+            
+            simulated_response = f"<think>\n{clean_thinking_body}\n</think>\n{action_text}"
+            return simulated_response, p1_usage
+
         # ── Pass 2: LoRA generates the action with the trace prefilled ─
+        # Extract just the reasoning part for the LoRA prefill so we don't confuse it
+        # with the Action/Is_Coordinate_Action format which it wasn't trained on.
+
         # We pass the completed <think>...</think>\n block as the start of the
         # assistant turn.  `continue_final_message=True` tells vLLM to NOT close
         # the turn with <|im_end|> — the model decodes directly after </think>\n.
@@ -344,7 +368,7 @@ class DynamicLoRAVLLMModel:
         # IMPORTANT: use enable_thinking=False so the template does NOT prepend
         # another <think>\n before our prefill content (that would double the tag
         # and send the LoRA into a reasoning loop).
-        prefill = f"<think>\n{thinking_body}\n</think>\n"
+        prefill = f"<think>\n{clean_thinking_body}\n</think>\n"
         pass2_messages = pass2_base_messages + [{"role": "assistant", "content": prefill}]
 
         pass2_kwargs = dict(

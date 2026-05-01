@@ -1050,10 +1050,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             generate_kwargs["pass1_prompt"] = (
                 f"Task: {goal}\n\n"
                 f"{history_summary}"
-                "Look at the screenshot of an Android phone. You are an intelligent assistant."
-                "Describe what you see on the current screen and what you think the next action should be to complete the task"
-                "Think step by step and output only your reasoning and be concise, in 2-3 sentences."
-                "If the task is completed, please make note of this in the reasoning."
+                "Look at the screenshot of an Android phone. You are an intelligent assistant.\n"
+                "First, describe what you see and what you think the next action should be to complete the task in 2-3 sentences.\n"
+                "Then, specify the exact action to take.\n"
+                "Finally, indicate if this action is a coordinate prediction action (ONLY tap, swipe, or type are True. Actions like task_complete(), press_home(), press_back(), etc., are False).\n\n"
+                "Your response MUST follow this exact format:\n"
+                "Reasoning: <your step-by-step reasoning>\n"
+                "Action: <the function call, e.g., tap(x,y) or task_complete()>\n"
+                "Is_Coordinate_Action: <True or False>"
             )
         raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
