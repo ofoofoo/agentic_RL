@@ -55,6 +55,10 @@ def main():
         help="Agent interaction mode: 'element' for UI parsing, 'raw' for normalized coordinates, 'grid' for grid overlay, 'grid2level' for hierarchical grid.",
     )
     parser.add_argument(
+        "--lora_as_tool", action="store_true",
+        help="Use LoRA only as a tool for coordinate prediction (bypass LoRA for simple actions like back/home/done).",
+    )
+    parser.add_argument(
         "--custom_goal", type=str, default="",
         help="Run an open-ended session with this specific custom goal text instead of predefined AndroidWorld tasks."
     )
@@ -114,6 +118,7 @@ def main():
     config["BACKEND"] = args.backend
     config["AGENT_MODE"] = args.agent_mode
     config["THINKING_MODE"] = args.thinking_mode
+    config["LORA_AS_TOOL"] = args.lora_as_tool
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
 

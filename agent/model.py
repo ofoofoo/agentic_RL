@@ -229,12 +229,14 @@ class DynamicLoRAVLLMModel:
         base_url: str = "http://127.0.0.1:8000/v1",
         think_max_tokens: int | None = None,
         action_max_tokens: int | None = None,
+        lora_as_tool: bool = False,
     ):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.base_model = base_model
         self.lora_model = lora_model
         self.think_max_tokens = think_max_tokens or self.DEFAULT_THINK_MAX_TOKENS
         self.action_max_tokens = action_max_tokens or self.DEFAULT_ACTION_MAX_TOKENS
+        self.lora_as_tool = lora_as_tool
 
     @staticmethod
     def _strip_think_wrapper(text: str) -> str:
@@ -325,6 +327,8 @@ class DynamicLoRAVLLMModel:
             max_tokens=self.think_max_tokens,
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
+        if not self.lora_as_tool:
+            pass1_kwargs["stop"] = ["</think>"]
         if temperature is not None:
             pass1_kwargs["temperature"] = temperature
         thinking_body, p1_usage = self._stream(pass1_kwargs)
@@ -335,27 +339,29 @@ class DynamicLoRAVLLMModel:
             f"\033[36m{thinking_body}\033[0m"
         )
 
-        # Parse Is_Coordinate_Action from Pass 1
-        is_coordinate = True # Default to True
-        match = re.search(r"Is_Coordinate_Action:\s*(True|False)", thinking_body, re.IGNORECASE)
-        if match:
-            is_coordinate = match.group(1).lower() == "true"
-        else:
-            # Fallback heuristic
-            if "task_complete" in thinking_body or "press_" in thinking_body:
-                is_coordinate = False
+        clean_thinking_body = thinking_body_stripped
+        if self.lora_as_tool:
+            # Parse Is_Coordinate_Action from Pass 1
+            is_coordinate = True # Default to True
+            match = re.search(r"Is_Coordinate_Action:\s*(True|False)", thinking_body, re.IGNORECASE)
+            if match:
+                is_coordinate = match.group(1).lower() == "true"
+            else:
+                # Fallback heuristic
+                if "task_complete" in thinking_body or "press_" in thinking_body:
+                    is_coordinate = False
 
-        reasoning_match = re.search(r"Reasoning:\s*(.*?)(?=\nAction:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
-        clean_thinking_body = reasoning_match.group(1).strip() if reasoning_match else thinking_body_stripped
+            reasoning_match = re.search(r"Reasoning:\s*(.*?)(?=\nAction:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
+            clean_thinking_body = reasoning_match.group(1).strip() if reasoning_match else thinking_body_stripped
 
-        if not is_coordinate:
-            print("\033[33m[PASS1/BASE] is_coordinate=False, bypassing Pass 2.\033[0m")
-            # Construct a response that matches the expected format (action outside <think> block)
-            action_match = re.search(r"Action:\s*(.*?)(?=\nIs_Coordinate_Action:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
-            action_text = f"Action: {action_match.group(1).strip()}" if action_match else thinking_body_stripped
-            
-            simulated_response = f"<think>\n{clean_thinking_body}\n</think>\n{action_text}"
-            return simulated_response, p1_usage
+            if not is_coordinate:
+                print("\033[33m[PASS1/BASE] is_coordinate=False, bypassing Pass 2.\033[0m")
+                # Construct a response that matches the expected format (action outside <think> block)
+                action_match = re.search(r"Action:\s*(.*?)(?=\nIs_Coordinate_Action:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
+                action_text = f"Action: {action_match.group(1).strip()}" if action_match else thinking_body_stripped
+                
+                simulated_response = f"<think>\n{clean_thinking_body}\n</think>\n{action_text}"
+                return simulated_response, p1_usage
 
         # ── Pass 2: LoRA generates the action with the trace prefilled ─
         # Extract just the reasoning part for the LoRA prefill so we don't confuse it

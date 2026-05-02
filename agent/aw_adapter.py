@@ -340,6 +340,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 base_url=base_url,
                 think_max_tokens=config.get("THINK_MAX_TOKENS"),
                 action_max_tokens=config.get("ACTION_MAX_TOKENS"),
+                lora_as_tool=config.get("LORA_AS_TOOL", False),
             )
             print(
                 f"[aw_adapter] Backend: vLLM dynamic-LoRA — "
@@ -1047,18 +1048,64 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             if self._history:
                 lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
                 history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
-            generate_kwargs["pass1_prompt"] = (
-                f"Task: {goal}\n\n"
-                f"{history_summary}"
-                "Look at the screenshot of an Android phone. You are an intelligent assistant.\n"
-                "First, describe what you see and what you think the next action should be to complete the task in 2-3 sentences.\n"
-                "Then, specify the exact action to take.\n"
-                "Finally, indicate if this action is a coordinate prediction action (ONLY tap, swipe, or type are True. Actions like task_complete(), press_home(), press_back(), etc., are False).\n\n"
-                "Your response MUST follow this exact format:\n"
-                "Reasoning: <your step-by-step reasoning>\n"
-                "Action: <the function call, e.g., tap(x,y) or task_complete()>\n"
-                "Is_Coordinate_Action: <True or False>"
-            )
+                        
+            if getattr(self.model, "lora_as_tool", False):
+                generate_kwargs["pass1_prompt"] = (
+                    f"Task: {goal}\n\n"
+                    f"{history_summary}"
+                    "You are an agent controlling an Android phone. You interact with the screen using "
+                    "normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.\n\n"
+                    "Your job is to decide the SINGLE best next action to make progress on the task.\n\n"
+                    "Your response MUST follow this exact format (four sections, each on its own line):\n"
+                    "  Observation: <Describe what you see on the current screen>\n"
+                    "  Thought: <To complete the given task, what is the next step I should do>\n"
+                    "  Action: <The function call with correct parameters, OR task_complete() if done>\n"
+                    "  Summary: <Summarize your past actions along with your latest action in one sentence>\n"
+                    "  Is_Coordinate_Action: <True if the action is tap, swipe, or type — False for task_complete(), press_home(), press_back(), open(), etc.>\n\n"
+                    "Available actions (use exactly one per step):\n\n"
+                    "  open(app_name)\n"
+                    "    ALWAYS use this to launch an app. Works even if the app icon is not on screen.\n"
+                    "    Example: open(\"Clock\")\n\n"
+                    "  tap(x, y)\n"
+                    "    Tap the screen at normalized coordinates. x: 0.0=left, 1.0=right. y: 0.0=top, 1.0=bottom.\n"
+                    "    Example: tap(0.512, 0.743)\n\n"
+                    "  swipe(x1, y1, x2, y2)\n"
+                    "    Swipe from (x1, y1) to (x2, y2) using normalized coordinates.\n"
+                    "    Example: swipe(0.5, 0.8, 0.5, 0.2)\n\n"
+                    "  text(text_input)\n"
+                    "    Type text into the currently focused input field.\n"
+                    "    Example: text(\"Hello, world!\")\n\n"
+                    "  scroll(direction)\n"
+                    "    Scroll the screen. Direction: \"up\" (reveal content below) or \"down\" (reveal content above).\n"
+                    "    Example: scroll(\"up\")\n\n"
+                    "  clear_text()\n"
+                    "    Clear all text in the currently focused input field.\n"
+                    "    Example: clear_text()\n\n"
+                    "  answer(text_input)\n"
+                    "    Output the answer for information-retrieval tasks.\n"
+                    "    Example: answer(\"The current time is 10:30 AM\")\n\n"
+                    "  enter()\n"
+                    "    Press the Android Enter key. Useful for submitting forms or search queries.\n\n"
+                    "  back()\n"
+                    "    Press the Android back button.\n\n"
+                    "  home()\n"
+                    "    Press the Android home button.\n\n"
+                    "  task_complete()\n"
+                    "    Call this when the task has been successfully completed. Do NOT keep taking actions after the task is done.\n\n"
+                    "CRITICAL RULES:\n"
+                    "- If the app you need is not visible on screen, use open(\"App Name\") — do not swipe to find it.\n"
+                    "- For tap and swipe, use NORMALIZED coordinates (decimal values 0.0–1.0).\n"
+                    "- Is_Coordinate_Action is True ONLY for tap, swipe, and text. It is False for everything else.\n"
+                )
+            else:
+                generate_kwargs["pass1_prompt"] = (
+                    f"Task: {goal}\n\n"
+                    f"{history_summary}"
+                    "Look at the screenshot of an Android phone. You are an intelligent assistant."
+                    "Describe what you see on the current screen and what you think the next action should be to complete the task"
+                    "Think step by step and output only your reasoning and be concise, in 2-3 sentences."
+                    "If the task is completed, please make note of this in the reasoning."
+                )
         raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
 
