@@ -360,11 +360,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
 
         self.agent_mode = config.get("AGENT_MODE", "element")
         self.thinking_mode = config.get("THINKING_MODE", False)
+        self.prompt_style = config.get("PROMPT_STYLE", "full")
+        self._thinking_budget = config.get("THINKING_BUDGET")
+        self._max_tokens = config.get("MAX_TOKENS")
         
-        self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
-        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode)
+        self.raw_prompt = build_raw_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode, prompt_style=self.prompt_style)
+        self.element_prompt = build_element_prompt(SCREEN_W, SCREEN_H, thinking_mode=self.thinking_mode, prompt_style=self.prompt_style)
         self.grid_prompt = build_grid_prompt(
-            SCREEN_W, SCREEN_H, CELL_W, CELL_H, thinking_mode=self.thinking_mode
+            SCREEN_W, SCREEN_H, CELL_W, CELL_H, thinking_mode=self.thinking_mode, prompt_style=self.prompt_style
         )
 
         custom_prompt_file = config.get("CUSTOM_PROMPT_FILE", "")
@@ -395,6 +398,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         self.coarse_prompt = build_coarse_grid_prompt(
             SCREEN_W, SCREEN_H, self._coarse_cell_w, self._coarse_cell_h,
             self._coarse_rows, self._coarse_cols,
+            prompt_style=self.prompt_style,
         )
         if self.agent_mode == "grid2level":
             print(
@@ -629,6 +633,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             history=history_window,
             temperature=stall_temperature,
             enable_thinking=stall_thinking,
+            thinking_budget=self._thinking_budget,
+            max_tokens=self._max_tokens,
         )
         if isinstance(self.model, DynamicLoRAVLLMModel):
             history_summary = ""
@@ -1038,6 +1044,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             history=history_window,
             temperature=stall_temperature,
             enable_thinking=stall_thinking,
+            thinking_budget=self._thinking_budget,
+            max_tokens=self._max_tokens,
         )
         if isinstance(self.model, DynamicLoRAVLLMModel):
             # Pass 1 gets only the task + history summary + screenshot — NO formatting

@@ -2,8 +2,113 @@ import json
 import os
 
 
-def build_element_prompt(screen_width: int, screen_height: int, thinking_mode: bool = True) -> str:
-    """System prompt for UI-hierarchy (element) mode — primary mode."""
+def build_element_prompt(screen_width: int, screen_height: int, thinking_mode: bool = True, prompt_style: str = "full") -> str:
+    """System prompt for UI-hierarchy (element) mode — primary mode.
+    prompt_style: "full" (default), "compact" (shorter), or "orion".
+    """
+    if prompt_style == "compact":
+        return f"""\
+You are an agent controlling an Android phone. You see a screenshot with numbered UI elements and a text list describing each.
+
+Response format (four lines):
+  Observation: <what you see>
+  Thought: <next step>
+  Action: <function call or FINISH>
+  Summary: <one-sentence summary of all actions so far including this one>
+
+Actions (use exactly one per step):
+  open(app_name) — launch any app by name. Example: open("Clock")
+  tap(element) — tap numbered element. Example: tap(5)
+  text(input) — type into focused field. Example: text("Hello")
+  clear_text() — clear focused field
+  long_press(element) — long press numbered element
+  scroll("up"|"down") — scroll the page. "up" reveals content below
+  swipe(element, direction, dist) — swipe from element. dist: "short"/"medium"/"long"
+  answer(text) — answer information-retrieval tasks
+  wait(seconds) — wait for screen update
+  enter() — press Enter key
+  back() — press back button
+  home() — press home button
+  FINISH — task completed
+
+Rules: use open() to launch apps. Action line = one function call only, plain integer args.
+Screen: {screen_width}x{screen_height}.
+"""
+
+    if prompt_style == "orion":
+        return f"""\
+You are an agent controlling an Android phone. The screen shows interactive UI elements labeled by numbers, with a text list describing each element.
+
+Your response MUST follow this exact format:
+  Observation: <Describe in 1-2 concise sentences what you see and what the next step should be to complete the given task>
+  Action: <The function call with correct parameters, OR FINISH if done>
+
+Available actions:
+
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
+  tap(element)
+    Tap the UI element labeled with the given number.
+    Example: tap(5)
+
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello, world!")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
+
+  long_press(element)
+    Long press the UI element labeled with the given number.
+    Example: long_press(5)
+
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
+
+  swipe(element, direction, dist)
+    Swipe starting from a labeled element number.
+    direction: "up", "down", "left", or "right"
+    dist: "short", "medium", or "long"
+    Example: swipe(3, "up", "medium")
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+CRITICAL RULES:
+- If the app you need is not visible on screen, use open("App Name").
+- The Action line must use ONLY the function names listed above, with plain integer arguments
+  (e.g. tap(6), swipe(3, "up", "medium")). Do NOT use variable names or natural language.
+
+The screen dimensions are {screen_width}x{screen_height}.
+"""
+
     if not thinking_mode:
         print("Using non-thinking mode (element)")
         return f"""You are an agent controlling an Android phone. The screen shows interactive UI elements labeled by numbers, with a text list describing each element.
@@ -154,8 +259,102 @@ The screen dimensions are {screen_width}x{screen_height}.
 """
 
 
-def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int, thinking_mode: bool = False) -> str:
+def build_grid_prompt(screen_width: int, screen_height: int, cell_w: int, cell_h: int, thinking_mode: bool = False, prompt_style: str = "full") -> str:
     """System prompt for grid-overlay mode — fallback when elements aren't labeled."""
+    if prompt_style == "compact":
+        return f"""\
+You are an agent controlling an Android phone. The screen has a numbered grid overlay.
+
+Response format (four lines):
+  Observation: <what you see>
+  Thought: <next step>
+  Action: <function call or FINISH>
+  Summary: <one-sentence summary of all actions so far including this one>
+
+Actions (use exactly one per step):
+  open(app_name) — launch any app. Example: open("Clock")
+  tap(area, subarea) — tap grid area. subarea: center/top-left/top/top-right/left/right/bottom-left/bottom/bottom-right. Example: tap(5, "center")
+  long_press(area, subarea) — long press grid area
+  swipe(start_area, start_sub, end_area, end_sub) — swipe between areas
+  scroll("up"|"down") — scroll the page
+  text(input) — type into focused field
+  clear_text() — clear focused field
+  answer(text) — answer information-retrieval tasks
+  wait(seconds) — wait for screen update
+  enter() — press Enter key
+  back() — press back button
+  home() — press home button
+  FINISH — task completed
+
+Rules: use open() to launch apps. Action line = one function call only.
+Screen: {screen_width}x{screen_height}. Grid cell: {cell_w}x{cell_h}.
+"""
+
+    if prompt_style == "orion":
+        return f"""\
+You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
+
+Your response MUST follow this exact format:
+  Observation: <Describe in 1-2 concise sentences what observation and next steps should be to complete the given task>
+  Action: <The function call with correct parameters, OR FINISH if done>
+
+Available actions:
+
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
+  tap(x, y)
+    Tap a point on the screen. x is horizontal (0.0=left, 1.0=right),
+    y is vertical (0.0=top, 1.0=bottom).
+    Example: tap(0.512, 0.743)
+
+  swipe(x1, y1, x2, y2)
+    Swipe from (x1, y1) to (x2, y2).
+    Example: swipe(0.5, 0.8, 0.5, 0.2)
+
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
+
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+    Please always use open(app_name) to launch an app. Do not use swipe to access the app drawer or search.
+
+The screen dimensions are {screen_width}x{screen_height} pixels."""
+
     if not thinking_mode:
         print("Using non-thinking mode")
         return f"""You are an agent controlling an Android phone. The screen is overlaid with a numbered grid.
@@ -283,8 +482,101 @@ The screen dimensions are {screen_width}x{screen_height}. Each grid cell is {cel
 """
 
 
-def build_raw_prompt(screen_width: int, screen_height: int, thinking_mode: bool = False) -> str:
+def build_raw_prompt(screen_width: int, screen_height: int, thinking_mode: bool = False, prompt_style: str = "full") -> str:
     """System prompt for raw normalized coordinate mode."""
+    if prompt_style == "compact":
+        return f"""\
+You are an agent controlling an Android phone via normalized coordinates (0.0-1.0).
+
+Response format (four lines):
+  Observation: <what you see>
+  Thought: <next step>
+  Action: <function call or FINISH>
+  Summary: <one-sentence summary of all actions so far including this one>
+
+Actions (use exactly one per step):
+  open(app_name) — launch any app. Example: open("Clock")
+  tap(x, y) — tap at normalized coords. x: 0.0=left, 1.0=right; y: 0.0=top, 1.0=bottom
+  swipe(x1, y1, x2, y2) — swipe between points
+  scroll("up"|"down") — scroll the page
+  text(input) — type into focused field
+  clear_text() — clear focused field
+  answer(text) — answer information-retrieval tasks
+  wait(seconds) — wait for screen update
+  enter() — press Enter key
+  back() — press back button
+  home() — press home button
+  FINISH — task completed
+
+Rules: use open() to launch apps. Coordinates are normalized 0.0-1.0.
+Screen: {screen_width}x{screen_height}.
+"""
+
+    if prompt_style == "orion":
+        return f"""\
+You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
+
+Your response MUST follow this exact format:
+  Observation: <Describe in 1-2 concise sentences what observation and next steps should be to complete the given task>
+  Action: <The function call with correct parameters, OR FINISH if done>
+
+Available actions:
+
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
+  tap(x, y)
+    Tap a point on the screen. x is horizontal (0.0=left, 1.0=right),
+    y is vertical (0.0=top, 1.0=bottom).
+    Example: tap(0.512, 0.743)
+
+  swipe(x1, y1, x2, y2)
+    Swipe from (x1, y1) to (x2, y2).
+    Example: swipe(0.5, 0.8, 0.5, 0.2)
+
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
+
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+    Please always use open(app_name) to launch an app. Do not use swipe to access the app drawer or search.
+
+The screen dimensions are {screen_width}x{screen_height} pixels."""
+
     if not thinking_mode:
         print("Using non-thinking mode (raw)")
         return f"""You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
@@ -394,9 +686,104 @@ def build_coarse_grid_prompt(
     screen_width: int, screen_height: int,
     cell_w: int, cell_h: int,
     grid_rows: int, grid_cols: int,
+    prompt_style: str = "full",
 ) -> str:
     """System prompt for the COARSE pass of 2-level grid mode."""
     max_area = grid_rows * grid_cols
+
+    if prompt_style == "compact":
+        return f"""\
+You are an agent controlling an Android phone. Screen has a {grid_rows}x{grid_cols} numbered grid (areas 1-{max_area}).
+
+Response format (four lines):
+  Observation: <what you see>
+  Thought: <next step>
+  Action: <function call or FINISH>
+  Summary: <one-sentence summary of all actions so far including this one>
+
+Actions (use exactly one per step):
+  tap(area) — tap grid area (1-{max_area}), system zooms in. Example: tap(12)
+  long_press(area) — long press grid area
+  open(app_name) — launch any app. Example: open("Clock")
+  text(input) — type into focused field
+  clear_text() — clear focused field
+  scroll("up"|"down") — scroll the page
+  answer(text) — answer information-retrieval tasks
+  wait(seconds) — wait for screen update
+  enter() — press Enter key
+  back() — press back button
+  home() — press home button
+  FINISH — task completed
+
+Rules: areas 1-{max_area} only. Use open() to launch apps. Action = one function call only.
+Screen: {screen_width}x{screen_height}. Grid cell: {cell_w}x{cell_h}.
+"""
+
+    if prompt_style == "orion":
+        return f"""\
+You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
+
+Your response MUST follow this exact format:
+  Observation: <Describe in 1-2 concise sentences what observation and next steps should be to complete the given task>
+  Action: <The function call with correct parameters, OR FINISH if done>
+
+Available actions:
+
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
+  tap(x, y)
+    Tap a point on the screen. x is horizontal (0.0=left, 1.0=right),
+    y is vertical (0.0=top, 1.0=bottom).
+    Example: tap(0.512, 0.743)
+
+  swipe(x1, y1, x2, y2)
+    Swipe from (x1, y1) to (x2, y2).
+    Example: swipe(0.5, 0.8, 0.5, 0.2)
+
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
+
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+    Please always use open(app_name) to launch an app. Do not use swipe to access the app drawer or search.
+
+The screen dimensions are {screen_width}x{screen_height} pixels."""
+
     return f"""\
 You are an agent controlling an Android phone via a screen-reading loop. The current screen is overlaid with a numbered grid of {grid_rows} rows x {grid_cols} columns = {max_area} areas, numbered 1 to {max_area}.
 
@@ -510,9 +897,103 @@ CRITICAL: Grid areas range from 1 to {max_area} ONLY. Each grid cell is {cell_w}
 """
 
 
-def build_rawcoord_prompt(screen_width: int, screen_height: int) -> str:
+def build_rawcoord_prompt(screen_width: int, screen_height: int, prompt_style: str = "full") -> str:
     """System prompt for raw-coordinate mode — model outputs tap(x, y) normalized coords.
     Uses Observation/Thought/Action/Summary format with a rich action set."""
+    if prompt_style == "compact":
+        return f"""\
+You are an agent controlling an Android phone via normalized coordinates (0.0-1.0).
+
+Response format (four lines):
+  Observation: <what you see>
+  Thought: <next step>
+  Action: <function call or FINISH>
+  Summary: <one-sentence summary of all actions so far including this one>
+
+Actions (use exactly one per step):
+  open(app_name) — launch any app. Example: open("Clock")
+  tap(x, y) — tap at normalized coords. x: 0.0=left, 1.0=right; y: 0.0=top, 1.0=bottom
+  long_press(x, y) — long press at normalized coords
+  swipe(x, y, direction, dist) — swipe from point. dist: "short"/"medium"/"long"
+  scroll("up"|"down") — scroll the page
+  text(input) — type into focused field
+  clear_text() — clear focused field
+  answer(text) — answer information-retrieval tasks
+  wait(seconds) — wait for screen update
+  enter() — press Enter key
+  back() — press back button
+  home() — press home button
+  FINISH — task completed
+
+Rules: use open() to launch apps. Coordinates are normalized 0.0-1.0.
+Screen: {screen_width}x{screen_height}.
+"""
+
+    if prompt_style == "orion":
+        return f"""\
+You are an agent controlling an Android phone. You interact with the screen using normalized coordinates where (0.0, 0.0) is the top-left and (1.0, 1.0) is the bottom-right.
+
+Your response MUST follow this exact format:
+  Observation: <Describe in 1-2 concise sentences what observation and next steps should be to complete the given task>
+  Action: <The function call with correct parameters, OR FINISH if done>
+
+Available actions:
+
+  open(app_name)
+    ALWAYS use this to launch an app. Use this instead of swiping to access the
+    app drawer or searching. Works even if the app icon is not on screen.
+    Example: open("Clock")
+    Example: open("Audio Recorder")
+    Example: open("Settings")
+
+  tap(x, y)
+    Tap a point on the screen. x is horizontal (0.0=left, 1.0=right),
+    y is vertical (0.0=top, 1.0=bottom).
+    Example: tap(0.512, 0.743)
+
+  swipe(x1, y1, x2, y2)
+    Swipe from (x1, y1) to (x2, y2).
+    Example: swipe(0.5, 0.8, 0.5, 0.2)
+
+  scroll(direction)
+    Scroll the screen in a direction. Use this for scrolling lists/pages — it is
+    more reliable than swipe. Direction: "up" (see more below), "down" (see more above).
+    Example: scroll("up")    ← scrolls the page to reveal content further down
+    Example: scroll("down")  ← scrolls up to reveal content above
+
+  text(text_input)
+    Type text into the currently focused input field.
+    Example: text("Hello")
+
+  clear_text()
+    Clear all text in the currently focused input field (select-all then delete).
+    Example: clear_text()
+
+  answer(text_input)
+    Output the answer for information-retrieval tasks.
+    Example: answer("The current time is 10:30 AM")
+
+  wait(seconds)
+    Wait for a specified number of seconds for the screen to update.
+    Example: wait(5)
+
+  enter()
+    Press the Android Enter key. Useful for submitting forms or search queries.
+    Example: enter()
+
+  back()
+    Press the Android back button.
+
+  home()
+    Press the Android home button.
+
+  FINISH
+    Output this when the task has been successfully completed.
+
+    Please always use open(app_name) to launch an app. Do not use swipe to access the app drawer or search.
+
+The screen dimensions are {screen_width}x{screen_height} pixels."""
+
     return f"""\
 You are an agent controlling an Android phone via a screen-reading loop.
 

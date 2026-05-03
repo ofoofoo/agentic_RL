@@ -87,6 +87,18 @@ def main():
         help="Enable thinking prompt (defaults to False / non-thinking mode).",
     )
     parser.add_argument(
+        "--prompt_style", type=str, default="full", choices=["full", "compact", "minimal", "orion"],
+        help="Prompt verbosity: 'full' (default), 'compact' (shorter), 'minimal' (action-only).",
+    )
+    parser.add_argument(
+        "--thinking_budget", type=int, default=None,
+        help="Max thinking tokens (Gemini ThinkingConfig / vLLM thinking_token_budget). 0 disables thinking.",
+    )
+    parser.add_argument(
+        "--max_tokens", type=int, default=None,
+        help="Hard cap on total output tokens (Gemini max_output_tokens / vLLM max_tokens).",
+    )
+    parser.add_argument(
         "--oracle_backend", type=str, default=None, choices=["gemini", "vllm"],
         help="Backend for the Oracle model to evaluate termination.",
     )
@@ -119,6 +131,11 @@ def main():
     config["AGENT_MODE"] = args.agent_mode
     config["THINKING_MODE"] = args.thinking_mode
     config["LORA_AS_TOOL"] = args.lora_as_tool
+    config["PROMPT_STYLE"] = args.prompt_style
+    if args.thinking_budget is not None:
+        config["THINKING_BUDGET"] = args.thinking_budget
+    if args.max_tokens is not None:
+        config["MAX_TOKENS"] = args.max_tokens
     config["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY") # uses one of these API keys depending on selected backend
     config["VLLM_API_KEY"] = os.environ.get("VLLM_API_KEY")
 

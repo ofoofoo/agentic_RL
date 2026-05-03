@@ -31,6 +31,8 @@ class GeminiModel:
         examples: list[dict] = None,
         temperature: float | None = None,
         enable_thinking: bool = False,
+        thinking_budget: int | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[str, dict]:
         """
         Send a prompt to Gemini and return (text, usage) where
@@ -74,6 +76,12 @@ class GeminiModel:
         gen_config = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
+        if max_tokens is not None:
+            gen_config["max_output_tokens"] = max_tokens
+        if thinking_budget is not None:
+            gen_config["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=thinking_budget,
+            )
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=parts,
@@ -140,7 +148,7 @@ class VLLMModel:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model_name = model_name
 
-    def generate(self, prompt: str, image_path: str = None, history: list[dict] = None, examples: list[dict] = None, temperature: float | None = None, enable_thinking: bool = False) -> tuple[str, dict]:
+    def generate(self, prompt: str, image_path: str = None, history: list[dict] = None, examples: list[dict] = None, temperature: float | None = None, enable_thinking: bool = False, thinking_budget: int | None = None, max_tokens: int | None = None) -> tuple[str, dict]:
         """
         Returns (text, usage) where usage includes:
           prompt_tokens, completion_tokens, total_tokens,
@@ -151,15 +159,20 @@ class VLLMModel:
         messages = _build_vllm_messages(prompt, image_path, history, examples)
 
         t_request_start = _time.perf_counter()
+        extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        if thinking_budget is not None:
+            extra_body["thinking_token_budget"] = thinking_budget
         kwargs = dict(
             model=self.model_name,
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
-            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+            extra_body=extra_body,
         )
         if temperature is not None:
             kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         stream = self.client.chat.completions.create(**kwargs)
 
         full_text = ""
