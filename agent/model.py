@@ -304,6 +304,8 @@ class DynamicLoRAVLLMModel:
         thinking_budget: int | None = None,
         max_tokens: int | None = None,
         pass1_prompt: str | None = None,
+        pass2_prompt: str | None = None,
+        pass2_history: list[dict] | None = None,
     ) -> tuple[str, dict]:
         """
         pass1_prompt: a SHORT, format-free prompt for Pass 1 — e.g. just
@@ -312,13 +314,27 @@ class DynamicLoRAVLLMModel:
             (with "Your response MUST follow this exact format: <action call>")
             the base model puts the action inside <think> instead of reasoning,
             which completely breaks Pass 2.
-
             When None, falls back to the full `prompt` (suboptimal but won't crash).
+
+        pass2_prompt: optional replacement for `prompt` used to build pass2_base_messages.
+            Use this to give Pass 2 a differently-formatted history than Pass 1 sees
+            (e.g. action-call strings instead of English summaries).
+
+        pass2_history: optional replacement for `history` used to build pass2_base_messages.
+            Each item's "summary" field should be an action-call string matching the LoRA's
+            fine-tuning format rather than a natural-language description.
         """
         del enable_thinking  # always two-pass: pass 1 thinks, pass 2 acts
 
-        # Pass 2 gets the full formatted agent prompt (matches LoRA training distribution)
-        pass2_base_messages = _build_vllm_messages(prompt, image_path, history, examples)
+        # Pass 2 gets the full formatted agent prompt (matches LoRA training distribution).
+        # Use pass2_prompt / pass2_history overrides when provided so Pass 2 sees
+        # action-call history rather than the English summaries Pass 1 receives.
+        pass2_base_messages = _build_vllm_messages(
+            pass2_prompt if pass2_prompt is not None else prompt,
+            image_path,
+            pass2_history if pass2_history is not None else history,
+            examples,
+        )
 
         # Pass 1 gets a minimal prompt: just the task + screenshot, no format rules
         if pass1_prompt is not None:
@@ -398,6 +414,10 @@ class DynamicLoRAVLLMModel:
                 action_match = re.search(r"Action:\s*(.*?)(?=\nSummary:|\nIs_Coordinate_Action:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
                 action_text = f"Action: {action_match.group(1).strip()}" if action_match else thinking_body_stripped
 
+                # Pass 1 IS the executed action here, so its Summary field is accurate — extract it directly.
+                summary_m = re.search(r"Summary:\s*(.*?)$", thinking_body_stripped, re.MULTILINE | re.IGNORECASE)
+                p1_usage["pass3_summary"] = summary_m.group(1).strip() if summary_m else ""
+
                 simulated_response = f"<think>\n{clean_thinking_body}\n</think>\n{action_text}"
                 return simulated_response, p1_usage
 
@@ -439,19 +459,57 @@ class DynamicLoRAVLLMModel:
             f"\033[32m{action_text}\033[0m"
         )
 
+        # ── Pass 3: base model summarizes the action Pass 2 actually executed ──
+        # Pass 2 (LoRA) may produce different coordinates than Pass 1 predicted, so
+        # Pass 1's Summary field is unreliable.  Pass 3 re-uses the cached Pass 1
+        # prefix (full prefix-cache hit on ViT encode + all Pass 1 text tokens) and
+        # asks the base model to summarize the action that was actually taken.
+        # Only runs in lora_as_tool mode where the misalignment can occur.
+        pass3_summary = ""
+        p3_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                          "ttft_s": 0.0, "decode_s": 0.0, "tpot_s": 0.0}
+        if self.lora_as_tool:
+            action_m = re.search(r"Action:\s*(.*?)$", action_text, re.MULTILINE | re.IGNORECASE)
+            pass2_action_str = action_m.group(1).strip() if action_m else action_text.strip()
+
+            pass3_messages = pass1_messages + [
+                {"role": "assistant", "content": f"<think>\n{clean_thinking_body}\n</think>\n"},
+                {"role": "user", "content": (
+                    f"The action that was actually executed was: {pass2_action_str}\n"
+                    "Summarize what was done in one concise sentence starting with 'I'."
+                )},
+            ]
+            pass3_kwargs: dict = dict(
+                model=self.base_model,
+                messages=pass3_messages,
+                stream=True,
+                stream_options={"include_usage": True},
+                max_tokens=64,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            if temperature is not None:
+                pass3_kwargs["temperature"] = temperature
+            pass3_raw, p3_usage = self._stream(pass3_kwargs)
+            pass3_summary = pass3_raw.strip()
+            print(
+                f"\033[35m[PASS3/BASE  summary]\033[0m\n"
+                f"\033[35m{pass3_summary}\033[0m"
+            )
+
         full_text = f"{prefill}{action_text}"
-        usage = self._merge_usage(p1_usage, p2_usage)
+        usage = self._merge_usage(p1_usage, p2_usage, p3_usage, pass3_summary)
         return full_text, usage
 
     @staticmethod
-    def _merge_usage(p1: dict, p2: dict) -> dict:
-        prompt_tokens = p1["prompt_tokens"] + p2["prompt_tokens"]
-        completion_tokens = p1["completion_tokens"] + p2["completion_tokens"]
+    def _merge_usage(p1: dict, p2: dict, p3: dict | None = None, pass3_summary: str = "") -> dict:
+        p3 = p3 or {}
+        prompt_tokens = p1["prompt_tokens"] + p2["prompt_tokens"] + p3.get("prompt_tokens", 0)
+        completion_tokens = p1["completion_tokens"] + p2["completion_tokens"] + p3.get("completion_tokens", 0)
         total_tokens = prompt_tokens + completion_tokens
         # TTFT is dominated by pass-1 prefill (first user-visible latency before any token).
-        # decode time is the sum of both passes' decode windows.
+        # decode time is the sum of all passes' decode windows.
         ttft_s = p1["ttft_s"]
-        decode_s = p1["decode_s"] + p2["decode_s"]
+        decode_s = p1["decode_s"] + p2["decode_s"] + p3.get("decode_s", 0.0)
         tpot_s = (decode_s / completion_tokens) if completion_tokens > 0 else 0.0
         return {
             "prompt_tokens": prompt_tokens,
@@ -460,7 +518,7 @@ class DynamicLoRAVLLMModel:
             "ttft_s": round(ttft_s, 4),
             "decode_s": round(decode_s, 4),
             "tpot_s": round(tpot_s, 4),
-            # extra split-out fields for visibility into the 2-pass breakdown
+            # per-pass breakdown
             "pass1_prompt_tokens": p1["prompt_tokens"],
             "pass1_completion_tokens": p1["completion_tokens"],
             "pass1_ttft_s": round(p1["ttft_s"], 4),
@@ -469,4 +527,10 @@ class DynamicLoRAVLLMModel:
             "pass2_completion_tokens": p2["completion_tokens"],
             "pass2_ttft_s": round(p2["ttft_s"], 4),
             "pass2_decode_s": round(p2["decode_s"], 4),
+            "pass3_prompt_tokens": p3.get("prompt_tokens", 0),
+            "pass3_completion_tokens": p3.get("completion_tokens", 0),
+            "pass3_ttft_s": round(p3.get("ttft_s", 0.0), 4),
+            "pass3_decode_s": round(p3.get("decode_s", 0.0), 4),
+            # the accurate summary of the action that was actually executed
+            "pass3_summary": pass3_summary,
         }

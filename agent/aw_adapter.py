@@ -305,6 +305,41 @@ def _action_to_aw(
 
 DIFF_THUMBNAIL_SIZE = (270, 600)
 
+
+def _action_dict_to_str(action: dict) -> str:
+    """Convert a parsed action dict back to a compact function-call string."""
+    name = action.get("action", "unknown")
+    if name == "tap_raw":
+        return f"tap({action.get('x', '?')}, {action.get('y', '?')})"
+    if name == "swipe_raw":
+        return (f"swipe({action.get('x1','?')}, {action.get('y1','?')}, "
+                f"{action.get('x2','?')}, {action.get('y2','?')})")
+    if name == "tap":
+        return f"tap({action.get('element', '?')})"
+    if name == "tap_grid":
+        return f"tap({action.get('area','?')}, \"{action.get('subarea','center')}\")"
+    if name == "long_press":
+        return f"long_press({action.get('element', '?')})"
+    if name == "long_press_grid":
+        return f"long_press({action.get('area','?')}, \"{action.get('subarea','center')}\")"
+    if name == "text":
+        return f"text({action.get('text','?')!r})"
+    if name == "scroll":
+        return f"scroll(\"{action.get('direction','?')}\")"
+    if name == "swipe":
+        return (f"swipe({action.get('element','?')}, "
+                f"\"{action.get('direction','?')}\", \"{action.get('dist','medium')}\")")
+    if name == "open":
+        return f"open(\"{action.get('app','?')}\")"
+    if name == "answer":
+        return f"answer({action.get('text','?')!r})"
+    if name in ("back", "home", "enter", "clear_text", "wait"):
+        sec = action.get("time", "")
+        return f"{name}({sec})" if name == "wait" else f"{name}()"
+    if name == "done":
+        return "FINISH"
+    return name
+
 def _compute_screen_diff(prev: Image.Image | None, curr: Image.Image) -> float:
     """Normalized mean absolute pixel difference between two frames (0.0–1.0).
 
@@ -491,7 +526,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         time.sleep(2.0)
         print("Done additional chrome initialization")
 
-    def _build_prompt(self, goal: str, is_coarse: bool = False) -> str:
+    def _build_prompt(self, goal: str, is_coarse: bool = False, history_text: str | None = None) -> str:
         if is_coarse:
             sys_prompt = self.coarse_prompt
         else:
@@ -502,11 +537,12 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             }
             sys_prompt = prompts.get(self.agent_mode, self.element_prompt)
 
-        # Full text history
-        history_text = ""
-        if self._history:
-            lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
-            history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+        # history_text can be overridden (e.g. pass action-call strings instead of English summaries)
+        if history_text is None:
+            history_text = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
+                history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
 
         elem_text = ""
         if not is_coarse and self.agent_mode == "element" and self._elem_list:
@@ -637,6 +673,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             max_tokens=self._max_tokens,
         )
         if isinstance(self.model, DynamicLoRAVLLMModel):
+            # Pass 1 gets English summary history; pass 2 gets action-call history
             history_summary = ""
             if self._history:
                 lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
@@ -647,6 +684,17 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 "Look at the screenshot of an Android phone. "
                 "Think carefully about what the next action should be to accomplish the task."
             )
+            action_history_text = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {_action_dict_to_str(h.get('action', {}))}"
+                         for i, h in enumerate(self._history)]
+                action_history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            coarse_kwargs["pass2_prompt"] = self._build_prompt(goal, is_coarse=True,
+                                                               history_text=action_history_text)
+            coarse_kwargs["pass2_history"] = [
+                dict(h, summary=_action_dict_to_str(h.get("action", {})))
+                for h in history_window
+            ]
         coarse_raw, coarse_usage = self.model.generate(coarse_prompt, **coarse_kwargs)
         t_inference_coarse = time.perf_counter() - t0
 
@@ -691,7 +739,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             t_action = time.perf_counter() - t0
             t_step_total = time.perf_counter() - t_step_start
 
-            summary_val = coarse_result.get("summary")
+            summary_val = coarse_usage.get("pass3_summary") or coarse_result.get("summary")
             if not summary_val:
                 summary_val = coarse_raw[:100]
             self._history.append({
@@ -795,7 +843,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         combined_usage = self._combine_usage(coarse_usage, fine_usage)
         t_step_total = time.perf_counter() - t_step_start
 
-        summary = fine_result.get("summary")
+        summary = fine_usage.get("pass3_summary") or fine_result.get("summary")
         if not summary:
             summary = fine_raw[:100]
         self._history.append({
@@ -1048,15 +1096,14 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             max_tokens=self._max_tokens,
         )
         if isinstance(self.model, DynamicLoRAVLLMModel):
+            # Pass 1 (base model reasoning) gets English summary history
             history_summary = ""
             if self._history:
                 lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
                 history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
-            
-            print(f"here's the history summary: {history_summary}")
-                        
+
             if getattr(self.model, "lora_as_tool", False):
-                print("using the  lora as tool")
+                print("using the lora as tool")
                 generate_kwargs["pass1_prompt"] = (
                     f"Task: {goal}\n\n"
                     f"{history_summary}"
@@ -1126,6 +1173,18 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     "Think step by step and output only your reasoning and be concise, in 2-3 sentences."
                     "If the task is completed, please make note of this in the reasoning."
                 )
+
+            # Pass 2 (LoRA action head) gets action-call history matching its fine-tuning format
+            action_history_text = ""
+            if self._history:
+                lines = [f"  Step {i + 1}: {_action_dict_to_str(h.get('action', {}))}"
+                         for i, h in enumerate(self._history)]
+                action_history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            generate_kwargs["pass2_prompt"] = self._build_prompt(goal, history_text=action_history_text)
+            generate_kwargs["pass2_history"] = [
+                dict(h, summary=_action_dict_to_str(h.get("action", {})))
+                for h in history_window
+            ]
         raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
 
@@ -1227,7 +1286,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         t_action = time.perf_counter() - t0
         t_step_total = time.perf_counter() - t_step_start
 
-        summary_val = result.get("summary")
+        summary_val = token_usage.get("pass3_summary") or result.get("summary")
         if not summary_val:
             summary_val = raw_response[:100]
         # 8. update history
