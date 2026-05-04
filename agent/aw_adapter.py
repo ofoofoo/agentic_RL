@@ -1052,6 +1052,8 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             if self._history:
                 lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
                 history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            
+            print(f"here's the history summary: {history_summary}")
                         
             if getattr(self.model, "lora_as_tool", False):
                 print("using the  lora as tool")

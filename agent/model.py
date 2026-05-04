@@ -301,6 +301,8 @@ class DynamicLoRAVLLMModel:
         examples: list[dict] | None = None,
         temperature: float | None = None,
         enable_thinking: bool = False,  # accepted for API parity; ignored (this model is always 2-pass)
+        thinking_budget: int | None = None,
+        max_tokens: int | None = None,
         pass1_prompt: str | None = None,
     ) -> tuple[str, dict]:
         """
@@ -340,6 +342,9 @@ class DynamicLoRAVLLMModel:
             max_tokens=self.think_max_tokens,
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
+        if thinking_budget is not None:
+            pass1_kwargs["extra_body"]["thinking_token_budget"] = thinking_budget
+
         if not self.lora_as_tool:
             pass1_kwargs["stop"] = ["</think>"]
         else:
