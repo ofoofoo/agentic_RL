@@ -21,10 +21,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 # Config
 # ---------------------------------------------------------------------------
 BASE_DIRS = [
-    os.path.expanduser("~/agentic_RL/output/aw_runs"),
-    os.path.expanduser("~/agentic_RL/output/aw_runs_grid2level"),
+    os.path.expanduser("~/Documents/agentic_RL/output/aw_runs"),
+    os.path.expanduser("~/Documents/agentic_RL/output/aw_runs_grid2level"),
 ]
-LOG_DIR = os.path.expanduser("~")
+LOG_DIR = os.path.expanduser("~/Documents/agentic_RL")
 MIN_TASKS_FOR_DISPLAY = 50
 
 BENCHMARK_LOG_MAP: dict[str, str] = {}

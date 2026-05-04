@@ -342,6 +342,8 @@ class DynamicLoRAVLLMModel:
         )
         if not self.lora_as_tool:
             pass1_kwargs["stop"] = ["</think>"]
+        else:
+            pass1_kwargs["stop"] = ["\nObservation:"]
         if temperature is not None:
             pass1_kwargs["temperature"] = temperature
         thinking_body, p1_usage = self._stream(pass1_kwargs)
@@ -354,25 +356,43 @@ class DynamicLoRAVLLMModel:
 
         clean_thinking_body = thinking_body_stripped
         if self.lora_as_tool:
-            # Parse Is_Coordinate_Action from Pass 1
-            is_coordinate = True # Default to True
-            match = re.search(r"Is_Coordinate_Action:\s*(True|False)", thinking_body, re.IGNORECASE)
-            if match:
-                is_coordinate = match.group(1).lower() == "true"
+            # Parse Complete: yes/no (explicit completion field — primary routing signal)
+            complete_match = re.search(r"Complete:\s*(yes|no)", thinking_body, re.IGNORECASE)
+            task_is_complete = complete_match and complete_match.group(1).lower() == "yes"
+
+            # Parse Is_Coordinate_Action (action-type routing)
+            is_coordinate = True  # default: route to LoRA
+            coord_match = re.search(r"Is_Coordinate_Action:\s*(True|False)", thinking_body, re.IGNORECASE)
+            if coord_match:
+                is_coordinate = coord_match.group(1).lower() == "true"
             else:
                 # Fallback heuristic
                 if "task_complete" in thinking_body or "press_" in thinking_body:
                     is_coordinate = False
 
-            reasoning_match = re.search(r"Reasoning:\s*(.*?)(?=\nAction:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
-            clean_thinking_body = reasoning_match.group(1).strip() if reasoning_match else thinking_body_stripped
+            # Complete: yes overrides — never route to LoRA when task is done
+            if task_is_complete:
+                is_coordinate = False
+
+            # Extract Observation + Thought for the LoRA prefill.
+            # Format is now: Observation / Thought / Complete / Action / Summary / Is_Coordinate_Action.
+            # Stop before Complete: (which immediately precedes Action:) so the LoRA
+            # never sees Pass 1's coordinate prediction and must generate its own.
+            reasoning_match = re.search(
+                r"((?:Observation:.*?)(?:Thought:.*?))(?=\s*Complete:|\s*Action:|\s*$)",
+                thinking_body_stripped,
+                re.DOTALL | re.IGNORECASE,
+            )
+            clean_thinking_body = reasoning_match.group(1).strip() if reasoning_match else re.sub(
+                r"\n?Complete:.*$", "", thinking_body_stripped, flags=re.DOTALL | re.IGNORECASE
+            ).strip()
 
             if not is_coordinate:
-                print("\033[33m[PASS1/BASE] is_coordinate=False, bypassing Pass 2.\033[0m")
+                print(f"\033[33m[PASS1/BASE] is_coordinate=False  task_is_complete={task_is_complete}, bypassing Pass 2.\033[0m")
                 # Construct a response that matches the expected format (action outside <think> block)
-                action_match = re.search(r"Action:\s*(.*?)(?=\nIs_Coordinate_Action:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
+                action_match = re.search(r"Action:\s*(.*?)(?=\nSummary:|\nIs_Coordinate_Action:|$)", thinking_body_stripped, re.DOTALL | re.IGNORECASE)
                 action_text = f"Action: {action_match.group(1).strip()}" if action_match else thinking_body_stripped
-                
+
                 simulated_response = f"<think>\n{clean_thinking_body}\n</think>\n{action_text}"
                 return simulated_response, p1_usage
 
