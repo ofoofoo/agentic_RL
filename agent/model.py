@@ -417,6 +417,7 @@ class DynamicLoRAVLLMModel:
                 # Pass 1 IS the executed action here, so its Summary field is accurate — extract it directly.
                 summary_m = re.search(r"Summary:\s*(.*?)$", thinking_body_stripped, re.MULTILINE | re.IGNORECASE)
                 p1_usage["pass3_summary"] = summary_m.group(1).strip() if summary_m else ""
+                p1_usage["pass1_raw"] = thinking_body_stripped
 
                 simulated_response = f"<think>\n{clean_thinking_body}\n</think>\n{action_text}"
                 return simulated_response, p1_usage
@@ -498,6 +499,8 @@ class DynamicLoRAVLLMModel:
 
         full_text = f"{prefill}{action_text}"
         usage = self._merge_usage(p1_usage, p2_usage, p3_usage, pass3_summary)
+        usage["pass1_raw"] = thinking_body_stripped
+        usage["pass2_raw"] = action_text
         return full_text, usage
 
     @staticmethod

@@ -107,8 +107,10 @@ def _annotate_thinking(img: Image.Image, thinking: str) -> Image.Image:
     import textwrap
     try:
         font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=24)
+        line_height = 24 + 8
     except OSError:
         font = ImageFont.load_default()
+        line_height = 16
     
     sidebar_width = 800
     new_height = max(img.height, 1200)
@@ -116,9 +118,24 @@ def _annotate_thinking(img: Image.Image, thinking: str) -> Image.Image:
     new_img.paste(img, (0, 0))
     
     draw = ImageDraw.Draw(new_img)
-    wrapped_text = textwrap.fill(thinking, width=65)
-    draw.multiline_text((img.width + 20, 20), wrapped_text, fill=(0, 0, 0), font=font, spacing=8)
+    x = img.width + 20
+    y = 20
     
+    current_color = (0, 0, 0)
+    
+    for line in thinking.split('\n'):
+        if "=== PASS 1 ===" in line:
+            current_color = (0, 150, 200)  # Cyan-ish
+        elif "=== PASS 2 ===" in line:
+            current_color = (0, 150, 0)    # Green
+        elif "=== PASS 3 ===" in line:
+            current_color = (180, 0, 180)  # Magenta
+            
+        wrapped_lines = textwrap.wrap(line, width=65) if line.strip() else [""]
+        for w_line in wrapped_lines:
+            draw.text((x, y), w_line, fill=current_color, font=font)
+            y += line_height
+            
     return new_img
 
 
@@ -678,6 +695,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             if self._history:
                 lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
                 history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            # print(f"\n\033[34m[PASS 1 HISTORY SUMMARY]\033[0m\n\033[36m{history_summary}\033[0m")
             coarse_kwargs["pass1_prompt"] = (
                 f"Task: {goal}\n\n"
                 f"{history_summary}"
@@ -689,6 +707,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 lines = [f"  Step {i + 1}: {_action_dict_to_str(h.get('action', {}))}"
                          for i, h in enumerate(self._history)]
                 action_history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            # print(f"\n\033[34m[PASS 2 ACTION HISTORY]\033[0m\n\033[32m{action_history_text}\033[0m")
             coarse_kwargs["pass2_prompt"] = self._build_prompt(goal, is_coarse=True,
                                                                history_text=action_history_text)
             coarse_kwargs["pass2_history"] = [
@@ -698,7 +717,15 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         coarse_raw, coarse_usage = self.model.generate(coarse_prompt, **coarse_kwargs)
         t_inference_coarse = time.perf_counter() - t0
 
-        coarse_annotated = _annotate_thinking(coarse_img, coarse_raw)
+        annotation_text = coarse_raw
+        if "pass1_raw" in coarse_usage:
+            annotation_text = f"=== PASS 1 ===\n{coarse_usage['pass1_raw']}"
+            if "pass2_raw" in coarse_usage:
+                annotation_text += f"\n\n=== PASS 2 ===\n{coarse_usage['pass2_raw']}"
+            if coarse_usage.get("pass3_summary"):
+                annotation_text += f"\n\n=== PASS 3 ===\n{coarse_usage['pass3_summary']}"
+
+        coarse_annotated = _annotate_thinking(coarse_img, annotation_text)
         coarse_annotated.save(coarse_path)
 
         print(
@@ -799,7 +826,15 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         fine_raw, fine_usage = self.model.generate(fine_prompt, image_path=fine_path)
         t_inference_fine = time.perf_counter() - t0
 
-        fine_annotated = _annotate_thinking(fine_img, fine_raw)
+        annotation_text = fine_raw
+        if "pass1_raw" in fine_usage:
+            annotation_text = f"=== PASS 1 ===\n{fine_usage['pass1_raw']}"
+            if "pass2_raw" in fine_usage:
+                annotation_text += f"\n\n=== PASS 2 ===\n{fine_usage['pass2_raw']}"
+            if fine_usage.get("pass3_summary"):
+                annotation_text += f"\n\n=== PASS 3 ===\n{fine_usage['pass3_summary']}"
+
+        fine_annotated = _annotate_thinking(fine_img, annotation_text)
         fine_annotated.save(fine_path)
 
         print(
@@ -1101,6 +1136,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
             if self._history:
                 lines = [f"  Step {i + 1}: {h['summary']}" for i, h in enumerate(self._history)]
                 history_summary = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            #print(f"\n\033[34m[PASS 1 HISTORY SUMMARY]\033[0m\n\033[36m{history_summary}\033[0m")
 
             if getattr(self.model, "lora_as_tool", False):
                 print("using the lora as tool")
@@ -1114,7 +1150,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     "  Complete: <yes if the task is fully done, no if more steps are needed>\n"
                     "  Action: <The function call with correct parameters, OR FINISH if done>\n"
                     "  Summary: <Summarize your past actions along with your latest action in one sentence>\n"
-                    "  Is_Coordinate_Action: <True if the action is tap, swipe, or text() — False for FINISH, back(), home(), open(), enter(), scroll(), wait(), answer(), etc.>\n\n"
+                    "  Is_Coordinate_Action: <True ONLY if the action is tap() or swipe() — FALSE for clear_text() and all other actions>\n\n"
                     "Available actions:\n\n"
                     "  open(app_name)\n"
                     "    ALWAYS use this to launch an app. Use this instead of swiping to access the\n"
@@ -1161,7 +1197,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                     "- For tap, long_press, and swipe, output NORMALIZED coordinates (x, y) as decimal values\n"
                     "  between 0.0 and 1.0. x=0.0 is the left edge, x=1.0 is the right edge,\n"
                     "  y=0.0 is the top edge, y=1.0 is the bottom edge.\n"
-                    "- Is_Coordinate_Action is True ONLY for tap, swipe, and text. It is False for everything else.\n"
+                    "- Is_Coordinate_Action is True ONLY for tap() and swipe(). It is FALSE for clear_text() and everything else.\n"
                 )
 
             else:
@@ -1180,6 +1216,7 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
                 lines = [f"  Step {i + 1}: {_action_dict_to_str(h.get('action', {}))}"
                          for i, h in enumerate(self._history)]
                 action_history_text = "Actions taken so far:\n" + "\n".join(lines) + "\n\n"
+            # print(f"\n\033[34m[PASS 2 ACTION HISTORY]\033[0m\n\033[32m{action_history_text}\033[0m")
             generate_kwargs["pass2_prompt"] = self._build_prompt(goal, history_text=action_history_text)
             generate_kwargs["pass2_history"] = [
                 dict(h, summary=_action_dict_to_str(h.get("action", {})))
@@ -1188,7 +1225,15 @@ class AWAgentAdapter(base_agent.EnvironmentInteractingAgent):
         raw_response, token_usage = self.model.generate(prompt, **generate_kwargs)
         t_inference = time.perf_counter() - t0
 
-        img_annotated = _annotate_thinking(mode_img, raw_response)
+        annotation_text = raw_response
+        if "pass1_raw" in token_usage:
+            annotation_text = f"=== PASS 1 ===\n{token_usage['pass1_raw']}"
+            if "pass2_raw" in token_usage:
+                annotation_text += f"\n\n=== PASS 2 ===\n{token_usage['pass2_raw']}"
+            if token_usage.get("pass3_summary"):
+                annotation_text += f"\n\n=== PASS 3 ===\n{token_usage['pass3_summary']}"
+
+        img_annotated = _annotate_thinking(mode_img, annotation_text)
         img_annotated.save(image_path)
 
         prompt_tokens = token_usage.get("prompt_tokens", 0)
