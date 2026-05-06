@@ -212,6 +212,22 @@ def _discover_log_map() -> dict[str, str]:
     return mapping
 
 
+def _success_count_from_tasks(tasks: list) -> int:
+    """Count successes from results.json fields (matches run_aw_benchmark success logic).
+
+    Uses ``success`` when set. If a legacy row has ``success`` false but both
+    ``env_success`` and ``agent_done`` are true, count it anyway so old runs
+    do not need a hard-coded per-run override.
+    """
+    n = 0
+    for t in tasks:
+        if t.get("success"):
+            n += 1
+        elif t.get("env_success") and t.get("agent_done"):
+            n += 1
+    return n
+
+
 def load_run(run_id: str, base_dir: str) -> dict | None:
     rfile = os.path.join(base_dir, run_id, "results.json")
     if not os.path.isfile(rfile):
@@ -221,9 +237,7 @@ def load_run(run_id: str, base_dir: str) -> dict | None:
     if not isinstance(tasks, list) or len(tasks) == 0:
         return None
     n = len(tasks)
-    TASK_SUCCESSFUL_OVERRIDES = {"20260424_091700": 45}
-    succ = TASK_SUCCESSFUL_OVERRIDES.get(run_id,
-               sum(1 for t in tasks if t.get("success")))
+    succ = _success_count_from_tasks(tasks)
 
     classifications = [classify_failure(t) for t in tasks]
     failure_counts = dict(Counter(classifications))
@@ -313,9 +327,7 @@ def api_runs():
             with open(rfile) as f:
                 tasks = json.load(f)
             n = len(tasks)
-            TASK_SUCCESSFUL_OVERRIDES = {"20260424_091700": 45}
-            succ = TASK_SUCCESSFUL_OVERRIDES.get(e["run_id"],
-                       sum(1 for t in tasks if t.get("success")))
+            succ = _success_count_from_tasks(tasks)
         except Exception:
             n, succ = 0, 0
         acc = round(succ / n * 100, 1) if n else 0
