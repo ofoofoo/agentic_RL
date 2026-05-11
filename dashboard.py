@@ -1,8 +1,12 @@
 """
 Eval-run failure-analysis dashboard.
 
-    .venv/bin/python dashboard.py            # serves on http://localhost:8050
-    .venv/bin/python dashboard.py --port 9000 # custom port
+Runs on this machine (e.g. lab server ``x4``) with ``--host 0.0.0.0`` by default,
+so it is reachable from your laptop. Open ``http://<this-hostname>:8050`` (e.g.
+``http://x4:8050``), not ``localhost`` from another computer.
+
+    .venv/bin/python dashboard.py
+    .venv/bin/python dashboard.py --port 9000
 """
 
 import argparse
@@ -10,6 +14,7 @@ import glob
 import json
 import os
 import re
+import socket
 from collections import Counter
 from contextlib import asynccontextmanager
 
@@ -20,11 +25,35 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE_DIRS = [
-    os.path.expanduser("~/Documents/agentic_RL/output/aw_runs"),
-    os.path.expanduser("~/Documents/agentic_RL/output/aw_runs_grid2level"),
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Match config.yaml OUTPUT_DIR="./output" and run_aw_benchmark session layout.
+_BASE_DIR_CANDIDATES = [
+    os.path.join(_REPO_ROOT, "output", "aw_runs"),
+    os.path.join(_REPO_ROOT, "output", "aw_runs_grid2level"),
+    # Legacy paths (older machines / clones outside repo tree)
+    os.path.expanduser("~/agentic_RL/output/aw_runs"),
+    os.path.expanduser("~/agentic_RL/output/aw_runs_grid2level"),
 ]
-LOG_DIR = os.path.expanduser("~/Documents/agentic_RL")
+
+
+def _unique_existing_base_dirs() -> list[str]:
+    """De-dupe by realpath so repo + home paths that are the same dir only appear once."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in _BASE_DIR_CANDIDATES:
+        ap = os.path.abspath(os.path.expanduser(p))
+        if not os.path.isdir(ap):
+            continue
+        rp = os.path.realpath(ap)
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append(rp)
+    return out
+
+
+BASE_DIRS = _unique_existing_base_dirs()
+LOG_DIR = os.path.expanduser("~")
 MIN_TASKS_FOR_DISPLAY = 50
 
 BENCHMARK_LOG_MAP: dict[str, str] = {}
@@ -1025,5 +1054,11 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8050)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     args = parser.parse_args()
-    print(f"\n  Dashboard -> http://localhost:{args.port}\n")
+    hn = socket.gethostname()
+    if args.host in ("0.0.0.0", "::", "[::]"):
+        print(f"\n  Dashboard listening on {args.host}:{args.port}")
+        print(f"    From this server:   http://127.0.0.1:{args.port}")
+        print(f"    From your laptop:   http://{hn}:{args.port}  (use this host/IP, not localhost)\n")
+    else:
+        print(f"\n  Dashboard -> http://{args.host}:{args.port}\n")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
