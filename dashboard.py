@@ -185,6 +185,9 @@ def classify_failure(task: dict) -> str:
     stall = task.get("max_stall_count", 0)
     if task.get("stall_terminated", False):
         return "stall_terminated"
+    # Env verification passed but the agent never emitted FINISH / task_complete.
+    if task.get("env_success") and not task.get("agent_done"):
+        return "env_complete_no_finish"
     hit_budget = _is_budget_exhaustion(steps)
     if hit_budget and stall >= STALL_SEVERE:
         return "budget_exhaustion_with_stall"
@@ -203,6 +206,7 @@ FAILURE_LABELS = {
     "success": "Success",
     "skipped": "Skipped (env error)",
     "stall_terminated": "Stall-terminated",
+    "env_complete_no_finish": "Env complete, no FINISH",
     "budget_exhaustion_with_stall": "Budget exhausted + stall",
     "budget_exhaustion": "Budget exhausted (no stall)",
     "severe_stall": "Severe stall (\u22655)",
@@ -215,6 +219,7 @@ FAILURE_COLORS = {
     "success": "#22c55e",
     "skipped": "#94a3b8",
     "stall_terminated": "#ef4444",
+    "env_complete_no_finish": "#0ea5e9",
     "budget_exhaustion_with_stall": "#f97316",
     "budget_exhaustion": "#eab308",
     "severe_stall": "#dc2626",
@@ -709,12 +714,14 @@ tr.expandable:hover td:first-child{text-decoration:underline}
 <script>
 const COLORS = {
   success:"#22c55e",skipped:"#94a3b8",stall_terminated:"#ef4444",
+  env_complete_no_finish:"#0ea5e9",
   budget_exhaustion_with_stall:"#f97316",budget_exhaustion:"#eab308",
   severe_stall:"#dc2626",moderate_stall:"#fb923c",
   premature_finish:"#a78bfa",other_failure:"#64748b"
 };
 const LABELS = {
   success:"Success",skipped:"Skipped",stall_terminated:"Stall-terminated",
+  env_complete_no_finish:"Env complete, no FINISH",
   budget_exhaustion_with_stall:"Budget + stall",budget_exhaustion:"Budget exhausted",
   severe_stall:"Severe stall (>=5)",moderate_stall:"Moderate stall (3-4)",
   premature_finish:"Premature FINISH",other_failure:"Other failure"
