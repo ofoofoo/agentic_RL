@@ -317,6 +317,16 @@ async def lifespan(application: FastAPI):
 app = FastAPI(title="Eval Failure Dashboard", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def _no_store_dashboard_api(request, call_next):
+    """Avoid stale /api/* JSON when the server or dashboard code is updated."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/") and not path.startswith("/api/img/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
 @app.get("/api/runs")
 def api_runs():
     entries = discover_runs()
@@ -516,6 +526,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache">
 <title>Eval Failure Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
@@ -696,7 +707,7 @@ function switchTab(tab) {
 
 // ---- Ablation table ----
 async function loadAblation() {
-  const res = await fetch('/api/ablation_table');
+  const res = await fetch('/api/ablation_table', { cache: 'no-store' });
   ablationData = await res.json();
   renderAblation();
 }
@@ -751,7 +762,7 @@ document.querySelectorAll('th[data-abl]').forEach(th => {
 
 // ---- Per-run analysis ----
 async function init() {
-  const res = await fetch('/api/runs');
+  const res = await fetch('/api/runs', { cache: 'no-store' });
   allRuns = await res.json();
   const sel = document.getElementById('run-select');
   sel.innerHTML = '<option value="">-- select a run --</option>';
@@ -768,7 +779,7 @@ async function init() {
 }
 
 async function loadRun(runId) {
-  const res = await fetch(`/api/run/${runId}`);
+  const res = await fetch(`/api/run/${runId}`, { cache: 'no-store' });
   currentRun = await res.json();
   renderKPI(); renderFailureChart(); renderLatencyChart(); renderFilters(); renderTable();
 }
@@ -889,7 +900,7 @@ async function toggleStepViewer(tr) {
   const task = tr.dataset.task;
   const combo = tr.dataset.combo || 0;
   const runId = currentRun.run_id;
-  const res = await fetch(`/api/steps/${runId}/${task}?combo=${combo}`);
+  const res = await fetch(`/api/steps/${runId}/${task}?combo=${combo}`, { cache: 'no-store' });
   const data = await res.json();
 
   if (!data.steps || !data.steps.length) {
@@ -975,7 +986,7 @@ function toggleCompare() {
 
 async function renderCompare() {
   const ids = allRuns.map(r => r.run_id).join(',');
-  const res = await fetch(`/api/compare?ids=${ids}`);
+  const res = await fetch(`/api/compare?ids=${ids}`, { cache: 'no-store' });
   const data = await res.json();
   if (!data.length) return;
 
