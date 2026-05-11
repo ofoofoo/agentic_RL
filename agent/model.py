@@ -1,7 +1,11 @@
 import json, base64, os, re, time as _time
 from pathlib import Path
-import google.genai as genai
-import google.genai.types as types
+try:
+    import google.genai as genai
+    import google.genai.types as types
+    _GOOGLE_GENAI_AVAILABLE = True
+except ImportError:
+    _GOOGLE_GENAI_AVAILABLE = False
 from openai import OpenAI
 
 
@@ -20,6 +24,10 @@ def _format_action(ex: dict) -> str:
 
 class GeminiModel:
     def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+        if not _GOOGLE_GENAI_AVAILABLE:
+            raise ImportError(
+                "google-genai is not installed. Install it with: pip install google-genai"
+            )
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
 
