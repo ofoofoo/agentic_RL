@@ -42,7 +42,8 @@ def main():
     parser.add_argument(
         "--tasks", type=str, default=None,
         help="Comma-separated task names (e.g. ContactsAddContact,ClockStopWatchRunning). "
-             "Leave empty to run all tasks.",
+             "Omit this flag entirely to run the full AndroidWorld registry (every task; "
+             "the startup banner prints the exact count).",
     )
     parser.add_argument(
         "--backend", type=str, default="gemini",
@@ -88,7 +89,8 @@ def main():
     )
     parser.add_argument(
         "--prompt_style", type=str, default="full", choices=["full", "compact", "minimal", "orion"],
-        help="Prompt verbosity: 'full' (default), 'compact' (shorter), 'minimal' (action-only).",
+        help="Prompt verbosity: 'full' (default), 'compact' (shorter), 'minimal' (action-only), "
+             "'orion' (Observation+Action+Summary, no Thought).",
     )
     parser.add_argument(
         "--thinking_budget", type=int, default=None,
@@ -121,6 +123,10 @@ def main():
     parser.add_argument(
         "--stall_threshold", type=float, default=None,
         help="Mean pixel diff below this counts as 'unchanged' screen, range 0.0-1.0 (overrides SCREEN_CHANGE_THRESHOLD in config.yaml).",
+    )
+    parser.add_argument(
+        "--success_if_env_done", action="store_true",
+        help="Count a task as success when AndroidWorld reports is_successful, even if the agent never output FINISH (default: success requires FINISH / agent_done).",
     )
     args = parser.parse_args()
 
@@ -321,7 +327,11 @@ def main():
                     
             if task_successful:
                 print("\033[32menv confirms task complete!\033[0m")
-            success = task_successful if agent_done else False
+            if args.success_if_env_done:
+                success = task_successful
+            else:
+                success = task_successful if agent_done else False
+            agent_success = bool(agent_done and task_successful)
             print(f"agent_done: {agent_done}, task_successful: {task_successful}, success: {success}")
 
             status = "✅" if success else "❌"
@@ -368,6 +378,9 @@ def main():
                 "combo": combo_idx,
                 "goal": goal,
                 "success": success,
+                "agent_done": agent_done,
+                "env_success": task_successful,
+                "agent_success": agent_success,
                 "steps": step_idx + 1,
                 "time_s": round(t_elapsed, 2),
                 "stall_terminated": stall_terminated,

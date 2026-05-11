@@ -242,15 +242,17 @@ def _discover_log_map() -> dict[str, str]:
 
 
 def _success_count_from_tasks(tasks: list) -> int:
-    """Count successes from results.json fields (matches run_aw_benchmark success logic).
+    """Count headline successes from each task row in results.json.
 
-    Uses ``success`` when set. If a legacy row has ``success`` false but both
-    ``env_success`` and ``agent_done`` are true, count it anyway so old runs
-    do not need a hard-coded per-run override.
+    Uses ``success`` when true. Otherwise counts explicit ``agent_success``
+    (agent finished the episode and the env verified), then legacy fallbacks
+    ``env_success`` and ``agent_done`` for older files missing ``agent_success``.
     """
     n = 0
     for t in tasks:
         if t.get("success"):
+            n += 1
+        elif t.get("agent_success") is True:
             n += 1
         elif t.get("env_success") and t.get("agent_done"):
             n += 1
